@@ -54,7 +54,9 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
         phone: normalizedPhone,
         password_hash: await (0, password_1.hashPassword)(tempPassword),
         program_id: programId || null,
-        index_number: indexNumber || null,
+        // `undefined` (not `null`) when absent — see the comment on the schema
+        // field in models/User.js for why this matters for the sparse index.
+        index_number: indexNumber || undefined,
     });
     await (0, audit_1.writeAudit)({
         actorId: req.session.sub,
