@@ -20,7 +20,7 @@ exports.lecturesRouter.get("/mine", auth_1.authenticate, (0, auth_1.requireRole)
     res.json(lectures.map((l) => l.toJSON()));
 });
 // A student's own program's upcoming/ongoing lectures.
-exports.lecturesRouter.get("/for-program/upcoming", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
+exports.lecturesRouter.get("/for-program/upcoming", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const student = await User_1.User.findById(req.session.sub);
     if (!student?.program_id) {
         res.json([]);

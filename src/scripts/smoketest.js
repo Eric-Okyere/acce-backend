@@ -79,6 +79,10 @@ async function main() {
         phone: "0700000003",
         password_hash: await (0, password_1.hashPassword)("Rep@12345"),
         program_id: program._id,
+        // Course reps attend lectures in their own program and check in the
+        // same way a student does (see routes/attendance.js), so — like a
+        // student — they need their own index number on file to verify against.
+        index_number: "TEST/24/REP",
     });
     const studentA = await User_1.User.create({
         role: "STUDENT",
@@ -246,6 +250,52 @@ async function main() {
         password_hash: await (0, password_1.hashPassword)("Teacher@123"),
     });
     assert(!!secondTeacherNoIndexNumber._id, "a second user with no index number at all can still be created (sparse unique index regression check)");
+    console.log("\n8. Admin password reset");
+    const oldRepLoginStillWorks = await api("POST", "/auth/login", { phone: "0700000003", password: "Rep@12345" });
+    assert(oldRepLoginStillWorks.status === 200, "sanity check: the course rep's original password still works before any reset");
+    const resetPasswordForbiddenForRep = await api("PATCH", `/users/${rep._id}/reset-password`, undefined, studentToken);
+    assert(resetPasswordForbiddenForRep.status === 403, "a non-admin cannot reset another user's password");
+    const resetPasswordResult = await api("PATCH", `/users/${rep._id}/reset-password`, undefined, adminToken);
+    assert(resetPasswordResult.status === 200 && typeof resetPasswordResult.json.tempPassword === "string" && resetPasswordResult.json.tempPassword.length > 0, "admin resetting a course rep's password returns a new temporary password");
+    const oldRepPasswordNowRejected = await api("POST", "/auth/login", { phone: "0700000003", password: "Rep@12345" });
+    assert(oldRepPasswordNowRejected.status === 400, "the course rep's old password no longer works after an admin reset");
+    const newRepPasswordWorks = await api("POST", "/auth/login", { phone: "0700000003", password: resetPasswordResult.json.tempPassword });
+    assert(newRepPasswordWorks.status === 200, "the course rep can log in with the new temporary password issued by the reset");
+    const repToken = newRepPasswordWorks.json.token;
+    console.log("\n9. Course reps attend lectures too (check in the same way a student does)");
+    const teacherTriesCheckIn = await api("POST", "/attendance/check-in", {
+        lectureId: String(afterResetLecture._id),
+        qrToken: hall.qr_token,
+        deviceId: "teacher-device",
+        indexNumber: "whatever",
+        lat: hallLat,
+        lng: hallLng,
+    }, teacherAToken);
+    assert(teacherTriesCheckIn.status === 400 && teacherTriesCheckIn.json.code === "NOT_STUDENT", "a teacher still cannot check in — only students and course reps can");
+    const repMissingIndexNumber = await api("POST", "/attendance/check-in", {
+        lectureId: String(afterResetLecture._id),
+        qrToken: hall.qr_token,
+        deviceId: "rep-device-A",
+        indexNumber: "NOT/THE/REP",
+        lat: hallLat,
+        lng: hallLng,
+    }, repToken);
+    assert(repMissingIndexNumber.status === 400 && repMissingIndexNumber.json.code === "INDEX_NUMBER_MISMATCH", "a course rep checking in with the wrong index number is rejected, same as a student would be");
+    const repCheckIn = await api("POST", "/attendance/check-in", {
+        lectureId: String(afterResetLecture._id),
+        qrToken: hall.qr_token,
+        deviceId: "rep-device-A",
+        indexNumber: "TEST/24/REP",
+        lat: hallLat,
+        lng: hallLng,
+    }, repToken);
+    assert(repCheckIn.status === 200 && repCheckIn.json.record?.status === "PRESENT", "a course rep can check in to a lecture in their own program and is marked PRESENT");
+    const rosterAfterRepCheckIn = await api("GET", `/lectures/${afterResetLecture._id}/roster`, undefined, teacherAToken);
+    const repRosterEntry = rosterAfterRepCheckIn.json?.find((entry) => entry.studentId === String(rep._id));
+    assert(rosterAfterRepCheckIn.status === 200 && repRosterEntry?.status === "PRESENT", "the course rep's check-in shows up on the teacher's roster for that lecture, not just their own student accounts");
+    const reportAfterRepCheckIn = await api("GET", `/reports/subjects/${subject._id}`, undefined, adminToken);
+    const repInReport = reportAfterRepCheckIn.json?.studentStats?.find((s) => s.studentId === String(rep._id));
+    assert(reportAfterRepCheckIn.status === 200 && !!repInReport, "the course rep is counted in the subject's attendance dashboard alongside students");
     server.close();
     console.log(`\n${passed} passed, ${failed} failed.\n`);
     console.log("Cleaning up smoke test database...");

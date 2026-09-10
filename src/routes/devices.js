@@ -6,7 +6,7 @@ const Device_1 = require("../models/Device");
 const auth_1 = require("../middleware/auth");
 const audit_1 = require("../lib/audit");
 exports.devicesRouter = (0, express_1.Router)();
-exports.devicesRouter.get("/me", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
+exports.devicesRouter.get("/me", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const device = await Device_1.Device.findOne({ student_id: req.session.sub });
     res.json(device ? device.toJSON() : null);
 });

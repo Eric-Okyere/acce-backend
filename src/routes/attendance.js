@@ -38,8 +38,8 @@ async function validateScan(input) {
     if (!subject)
         throw (0, errors_1.badRequest)("The subject could not be found.", "NO_SUBJECT");
     const student = await User_1.User.findById(input.studentId);
-    if (!student || student.role !== "STUDENT")
-        throw (0, errors_1.badRequest)("Only students can check in to lectures.", "NOT_STUDENT");
+    if (!student || !["STUDENT", "COURSE_REP"].includes(student.role))
+        throw (0, errors_1.badRequest)("Only students and course reps can check in to lectures.", "NOT_STUDENT");
     if (String(student.program_id) !== String(subject.program_id)) {
         throw (0, errors_1.badRequest)("This lecture is not part of your program's timetable.", "WRONG_PROGRAM");
     }
@@ -60,7 +60,7 @@ const scanBody = (req) => ({
     lng: Number(req.body?.lng),
     accuracy: req.body?.accuracy != null ? Number(req.body.accuracy) : null,
 });
-exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
+exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const input = scanBody(req);
     const studentId = req.session.sub;
     const { lecture, distance, student } = await validateScan({ ...input, studentId });
@@ -126,7 +126,7 @@ exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requi
     });
     res.json({ success: "You're checked in and marked present for this lecture.", record: record.toJSON() });
 });
-exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
+exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const input = scanBody(req);
     const studentId = req.session.sub;
     const { lecture, distance } = await validateScan({ ...input, studentId });
@@ -167,7 +167,7 @@ exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requ
 });
 // Called right after the camera decodes a hall's QR: verifies the signature and
 // returns which of the student's own lectures are happening at that hall right now.
-exports.attendanceRouter.post("/resolve-scan", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
+exports.attendanceRouter.post("/resolve-scan", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const qrToken = String(req.body?.qrToken ?? "");
     const student = await User_1.User.findById(req.session.sub);
     if (!student?.program_id)
@@ -214,7 +214,7 @@ exports.attendanceRouter.post("/resolve-scan", auth_1.authenticate, (0, auth_1.r
     });
     res.json({ hallName: hall.name, candidates });
 });
-exports.attendanceRouter.get("/history/me", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
+exports.attendanceRouter.get("/history/me", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const student = await User_1.User.findById(req.session.sub);
     if (!student?.program_id) {
         res.json([]);

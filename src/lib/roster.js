@@ -5,14 +5,16 @@ const User_1 = require("../models/User");
 const AttendanceRecord_1 = require("../models/AttendanceRecord");
 const Subject_1 = require("../models/Subject");
 const lecturePhase_1 = require("./lecturePhase");
-/** Full expected roster for a lecture (every active student in its program), with any record. */
+/** Full expected roster for a lecture (every active student in its program, plus that
+ *  program's course rep(s) — they attend lectures and check in the same way a student
+ *  does, see routes/attendance.js), with any record. */
 async function getLectureRoster(lecture) {
     const subject = await Subject_1.Subject.findById(lecture.subject_id);
     if (!subject)
         return [];
     const phase = (0, lecturePhase_1.lecturePhase)(lecture);
     const [students, records] = await Promise.all([
-        User_1.User.find({ role: "STUDENT", program_id: subject.program_id, is_active: true }).sort({ name: 1 }),
+        User_1.User.find({ role: { $in: ["STUDENT", "COURSE_REP"] }, program_id: subject.program_id, is_active: true }).sort({ name: 1 }),
         AttendanceRecord_1.AttendanceRecord.find({ lecture_id: lecture._id }),
     ]);
     const byStudent = new Map(records.map((r) => [String(r.student_id), r]));

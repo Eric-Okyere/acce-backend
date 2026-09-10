@@ -43,6 +43,14 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
     if ((role === "COURSE_REP" || role === "STUDENT") && !programId) {
         throw (0, errors_1.badRequest)("A program is required for this role.");
     }
+    // Course reps attend lectures in their own program just like students do
+    // (see attendance.js — check-in is open to STUDENT and COURSE_REP), and
+    // check-in requires the person's own index number to already be on file
+    // to verify against. So unlike a student's (optional) index number, a
+    // course rep's is required at registration time.
+    if (role === "COURSE_REP" && !indexNumber) {
+        throw (0, errors_1.badRequest)("An index number is required for course reps — they also check in to lectures and need attendance taken, same as any student.");
+    }
     const normalizedPhone = (0, phone_1.normalizePhone)(phone);
     const existing = await User_1.User.findOne({ phone: normalizedPhone });
     if (existing)
@@ -80,4 +88,55 @@ exports.usersRouter.patch("/:id/active", auth_1.authenticate, (0, auth_1.require
         targetId: String(req.params.id),
     });
     res.json(user.toJSON());
+});
+// Admin resets any admin-created user's password (teacher / course rep / student).
+// Passwords are stored as bcrypt hashes only — there's no way to look the
+// original temp password back up, so this is the retrieval mechanism: it
+// always ISSUES A NEW ONE rather than revealing an old one. Returned once in
+// the response body, same as at registration time. Also flips
+// must_reset_password back on, since the admin (not the user) just chose it.
+exports.usersRouter.patch("/:id/reset-password", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const user = await User_1.User.findById(req.params.id);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    const tempPassword = (0, password_1.generateTempPassword)();
+    user.password_hash = await (0, password_1.hashPassword)(tempPassword);
+    user.must_reset_password = true;
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "RESET_USER_PASSWORD",
+        targetType: "user",
+        targetId: String(user._id),
+    });
+    res.json({ user: user.toJSON(), tempPassword });
+});
+// Backfills or corrects a user's index number — mainly for course reps that
+// existed before index numbers were required for that role (see the check in
+// POST "/" above), so admin can bring an already-registered course rep up to
+// the point where they can check in to lectures without re-creating their
+// account. Works for any role; harmless for teachers/admins even though they
+// never check in.
+exports.usersRouter.patch("/:id/index-number", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const indexNumber = String(req.body?.indexNumber ?? "").trim();
+    if (!indexNumber)
+        throw (0, errors_1.badRequest)("Enter an index number.");
+    const user = await User_1.User.findById(req.params.id);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    const clash = await User_1.User.findOne({ index_number: indexNumber, _id: { $ne: user._id } });
+    if (clash)
+        throw (0, errors_1.badRequest)("That index number is already in use by someone else.", "INDEX_NUMBER_TAKEN");
+    user.index_number = indexNumber;
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "SET_INDEX_NUMBER",
+        targetType: "user",
+        targetId: String(user._id),
+        metadata: { indexNumber },
+    });
+    res.json({ user: user.toJSON() });
 });

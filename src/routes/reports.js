@@ -20,7 +20,10 @@ exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requi
     if (req.session.role === "TEACHER" && String(subject.teacher_id) !== req.session.sub) {
         throw (0, errors_1.forbidden)("You can only view the dashboard for your own subjects.");
     }
-    const roster = await User_1.User.find({ role: "STUDENT", program_id: subject.program_id, is_active: true })
+    // Course reps attend lectures and check in the same way a student does
+    // (see routes/attendance.js) — include them in the roster/dashboard so
+    // their attendance is actually counted, not silently dropped.
+    const roster = await User_1.User.find({ role: { $in: ["STUDENT", "COURSE_REP"] }, program_id: subject.program_id, is_active: true })
         .select("_id name index_number")
         .sort({ name: 1 });
     const allLectures = await Lecture_1.Lecture.find({ subject_id: subject._id, status: { $ne: "CANCELLED" } }).sort({
