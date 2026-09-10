@@ -51,6 +51,18 @@ function verifyHallToken(token) {
         return null;
     }
 }
+// The printed/displayed QR encodes a LINK into the check-in page (/scan?token=…)
+// rather than the raw signed token text. A raw token isn't a URL, so a
+// person's default camera app (not this app's own in-page scanner) can only
+// ever offer to "copy" it — it has nothing to open. Wrapping it in a link
+// means any camera app (or just tapping the code) opens the browser straight
+// to the check-in form. The token itself, and how it's verified
+// (verifyHallToken above), are completely unchanged — only what gets drawn
+// into the QR image changes. See routes/halls.js's GET "/:id/qr" for the only
+// caller, and frontend app/scan/page.tsx for what reads the `token` param.
+function hallScanUrl(token) {
+    return `${env_1.env.FRONTEND_ORIGIN}/scan?token=${encodeURIComponent(token)}`;
+}
 async function hallQrDataUrl(token) {
-    return qrcode_1.default.toDataURL(token, { errorCorrectionLevel: "M", margin: 2, width: 480 });
+    return qrcode_1.default.toDataURL(hallScanUrl(token), { errorCorrectionLevel: "M", margin: 2, width: 480 });
 }
