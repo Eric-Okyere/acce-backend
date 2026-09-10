@@ -20,13 +20,15 @@ const userSchema = new mongoose_1.Schema({
     // sparse index actually needs to work correctly.
     index_number: { type: String, unique: true, sparse: true },
     program_id: { type: mongoose_1.Schema.Types.ObjectId, ref: "Program", default: null },
-    // Only meaningful for role COURSE_REP: the one subject they're responsible
+    // Only meaningful for role COURSE_REP: the subject(s) they're responsible
     // for scheduling lectures in (see routes/lectures.js's POST "/" handler,
-    // which rejects a lecture for any other subject). Set only via
-    // routes/users.js's promote-course-rep / demote-to-student routes — never
-    // directly at registration, since course reps are no longer created
-    // directly (they're promoted from an existing student account).
-    responsible_subject_id: { type: mongoose_1.Schema.Types.ObjectId, ref: "Subject", default: null },
+    // which rejects a lecture for any subject not in this list). A course rep
+    // can be assigned one or more courses — this is a list, not a single
+    // value. Set only via routes/users.js's promote-course-rep /
+    // demote-to-student routes — never directly at registration, since course
+    // reps are no longer created directly (they're promoted from an existing
+    // student account).
+    responsible_subject_ids: { type: [{ type: mongoose_1.Schema.Types.ObjectId, ref: "Subject" }], default: [] },
     is_active: { type: Boolean, default: true },
     must_reset_password: { type: Boolean, default: true },
     created_at: { type: Date, default: Date.now },

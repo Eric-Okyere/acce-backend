@@ -15,10 +15,11 @@ const VALID_ROLES = ["ADMIN", "TEACHER", "COURSE_REP", "STUDENT"];
 // deliberately excluded — per Eric's direction, a course rep is no longer
 // registered directly. Instead: the person registers (or is registered) as a
 // STUDENT first, then an admin promotes that student to COURSE_REP via
-// PATCH "/:id/promote-course-rep", which also assigns the one subject
-// they're responsible for. This means a course rep always already has their
-// own chosen (or admin-issued) password and index number before they become
-// a course rep — no separate credential-issuing step for that role anymore.
+// PATCH "/:id/promote-course-rep", which also assigns the one or more
+// subjects they're responsible for. This means a course rep always already
+// has their own chosen (or admin-issued) password and index number before
+// they become a course rep — no separate credential-issuing step for that
+// role anymore.
 const DIRECTLY_CREATABLE_ROLES = ["TEACHER", "STUDENT"];
 exports.usersRouter.get("/me", auth_1.authenticate, async (req, res) => {
     const user = await User_1.User.findById(req.session.sub);
@@ -145,15 +146,17 @@ exports.usersRouter.patch("/:id/index-number", auth_1.authenticate, (0, auth_1.r
     });
     res.json({ user: user.toJSON() });
 });
-// Promotes an existing student to course rep, assigning them the one subject
-// they're responsible for scheduling lectures in (see routes/lectures.js's
-// POST "/" handler, which only allows a rep to schedule for this subject).
-// Also doubles as "reassign a course rep to a different subject" — calling
-// this again on an existing course rep just changes responsible_subject_id.
+// Promotes an existing student to course rep, assigning them one or more
+// subjects they're responsible for scheduling lectures in (see
+// routes/lectures.js's POST "/" handler, which only allows a rep to schedule
+// for a subject in this list). Also doubles as "change which subjects a
+// course rep is responsible for" — calling this again on an existing course
+// rep just replaces the whole responsible_subject_ids list with the one sent.
 exports.usersRouter.patch("/:id/promote-course-rep", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
-    const subjectId = String(req.body?.subjectId ?? "").trim();
-    if (!subjectId)
-        throw (0, errors_1.badRequest)("Pick the subject this course rep will be responsible for.");
+    const rawSubjectIds = Array.isArray(req.body?.subjectIds) ? req.body.subjectIds : [];
+    const subjectIds = [...new Set(rawSubjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    if (subjectIds.length === 0)
+        throw (0, errors_1.badRequest)("Pick at least one subject this course rep will be responsible for.");
     const user = await User_1.User.findById(req.params.id);
     if (!user)
         throw (0, errors_1.notFound)("User");
@@ -167,15 +170,17 @@ exports.usersRouter.patch("/:id/promote-course-rep", auth_1.authenticate, (0, au
     if (!user.index_number) {
         throw (0, errors_1.badRequest)(`${user.name} has no index number on file yet — add one (see the Students page) before promoting them to course rep.`, "INDEX_NUMBER_REQUIRED");
     }
-    const subject = await Subject_1.Subject.findById(subjectId);
-    if (!subject)
+    const subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } });
+    if (subjects.length !== subjectIds.length) {
         throw (0, errors_1.notFound)("Subject");
-    if (String(subject.program_id) !== String(user.program_id)) {
-        throw (0, errors_1.badRequest)(`${user.name} is registered under a different program than that subject — pick a subject from their own program.`, "PROGRAM_MISMATCH");
+    }
+    const wrongProgramSubject = subjects.find((s) => String(s.program_id) !== String(user.program_id));
+    if (wrongProgramSubject) {
+        throw (0, errors_1.badRequest)(`${user.name} is registered under a different program than "${wrongProgramSubject.name}" — pick subjects from their own program.`, "PROGRAM_MISMATCH");
     }
     const wasStudent = user.role === "STUDENT";
     user.role = "COURSE_REP";
-    user.responsible_subject_id = subject._id;
+    user.responsible_subject_ids = subjects.map((s) => s._id);
     user.updated_at = new Date();
     await user.save();
     await (0, audit_1.writeAudit)({
@@ -183,7 +188,7 @@ exports.usersRouter.patch("/:id/promote-course-rep", auth_1.authenticate, (0, au
         action: wasStudent ? "PROMOTE_TO_COURSE_REP" : "REASSIGN_COURSE_REP_SUBJECT",
         targetType: "user",
         targetId: String(user._id),
-        metadata: { subjectId: String(subject._id), subjectName: subject.name },
+        metadata: { subjectIds: subjects.map((s) => String(s._id)), subjectNames: subjects.map((s) => s.name) },
     });
     res.json({ user: user.toJSON() });
 });
@@ -197,7 +202,7 @@ exports.usersRouter.patch("/:id/demote-to-student", auth_1.authenticate, (0, aut
     if (user.role !== "COURSE_REP")
         throw (0, errors_1.badRequest)("This account isn't a course rep.");
     user.role = "STUDENT";
-    user.responsible_subject_id = null;
+    user.responsible_subject_ids = [];
     user.updated_at = new Date();
     await user.save();
     await (0, audit_1.writeAudit)({
