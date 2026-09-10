@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.usersRouter = void 0;
 const express_1 = require("express");
 const User_1 = require("../models/User");
+const Subject_1 = require("../models/Subject");
 const phone_1 = require("../lib/phone");
 const password_1 = require("../lib/password");
 const auth_1 = require("../middleware/auth");
@@ -10,6 +11,15 @@ const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 exports.usersRouter = (0, express_1.Router)();
 const VALID_ROLES = ["ADMIN", "TEACHER", "COURSE_REP", "STUDENT"];
+// Roles an admin can create directly through POST "/" below. COURSE_REP is
+// deliberately excluded — per Eric's direction, a course rep is no longer
+// registered directly. Instead: the person registers (or is registered) as a
+// STUDENT first, then an admin promotes that student to COURSE_REP via
+// PATCH "/:id/promote-course-rep", which also assigns the one subject
+// they're responsible for. This means a course rep always already has their
+// own chosen (or admin-issued) password and index number before they become
+// a course rep — no separate credential-issuing step for that role anymore.
+const DIRECTLY_CREATABLE_ROLES = ["TEACHER", "STUDENT"];
 exports.usersRouter.get("/me", auth_1.authenticate, async (req, res) => {
     const user = await User_1.User.findById(req.session.sub);
     if (!user) {
@@ -38,18 +48,13 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
     const indexNumber = String(req.body?.indexNumber ?? "").trim();
     if (!VALID_ROLES.includes(role) || role === "ADMIN")
         throw (0, errors_1.badRequest)("Invalid role.");
+    if (!DIRECTLY_CREATABLE_ROLES.includes(role)) {
+        throw (0, errors_1.badRequest)("Course reps aren't registered directly — register this person as a student first, then promote them to course rep from the Course reps page.", "USE_PROMOTION_FLOW");
+    }
     if (!name || !phone)
         throw (0, errors_1.badRequest)("Name and phone number are required.");
-    if ((role === "COURSE_REP" || role === "STUDENT") && !programId) {
+    if (role === "STUDENT" && !programId) {
         throw (0, errors_1.badRequest)("A program is required for this role.");
-    }
-    // Course reps attend lectures in their own program just like students do
-    // (see attendance.js — check-in is open to STUDENT and COURSE_REP), and
-    // check-in requires the person's own index number to already be on file
-    // to verify against. So unlike a student's (optional) index number, a
-    // course rep's is required at registration time.
-    if (role === "COURSE_REP" && !indexNumber) {
-        throw (0, errors_1.badRequest)("An index number is required for course reps — they also check in to lectures and need attendance taken, same as any student.");
     }
     const normalizedPhone = (0, phone_1.normalizePhone)(phone);
     const existing = await User_1.User.findOne({ phone: normalizedPhone });
@@ -137,6 +142,69 @@ exports.usersRouter.patch("/:id/index-number", auth_1.authenticate, (0, auth_1.r
         targetType: "user",
         targetId: String(user._id),
         metadata: { indexNumber },
+    });
+    res.json({ user: user.toJSON() });
+});
+// Promotes an existing student to course rep, assigning them the one subject
+// they're responsible for scheduling lectures in (see routes/lectures.js's
+// POST "/" handler, which only allows a rep to schedule for this subject).
+// Also doubles as "reassign a course rep to a different subject" — calling
+// this again on an existing course rep just changes responsible_subject_id.
+exports.usersRouter.patch("/:id/promote-course-rep", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const subjectId = String(req.body?.subjectId ?? "").trim();
+    if (!subjectId)
+        throw (0, errors_1.badRequest)("Pick the subject this course rep will be responsible for.");
+    const user = await User_1.User.findById(req.params.id);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    if (user.role !== "STUDENT" && user.role !== "COURSE_REP") {
+        throw (0, errors_1.badRequest)("Only a student can be promoted to course rep.");
+    }
+    // Course reps check in to lectures the same way a student does (see
+    // routes/attendance.js), which requires their own index number to verify
+    // against — so promotion is blocked until one is on file, same
+    // requirement as v3.10's now-removed direct-creation path.
+    if (!user.index_number) {
+        throw (0, errors_1.badRequest)(`${user.name} has no index number on file yet — add one (see the Students page) before promoting them to course rep.`, "INDEX_NUMBER_REQUIRED");
+    }
+    const subject = await Subject_1.Subject.findById(subjectId);
+    if (!subject)
+        throw (0, errors_1.notFound)("Subject");
+    if (String(subject.program_id) !== String(user.program_id)) {
+        throw (0, errors_1.badRequest)(`${user.name} is registered under a different program than that subject — pick a subject from their own program.`, "PROGRAM_MISMATCH");
+    }
+    const wasStudent = user.role === "STUDENT";
+    user.role = "COURSE_REP";
+    user.responsible_subject_id = subject._id;
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: wasStudent ? "PROMOTE_TO_COURSE_REP" : "REASSIGN_COURSE_REP_SUBJECT",
+        targetType: "user",
+        targetId: String(user._id),
+        metadata: { subjectId: String(subject._id), subjectName: subject.name },
+    });
+    res.json({ user: user.toJSON() });
+});
+// Reverses a promotion — back to a plain student account, no longer able to
+// schedule lectures. Doesn't touch anything else about the account (phone,
+// password, index number, attendance history all stay exactly as they were).
+exports.usersRouter.patch("/:id/demote-to-student", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const user = await User_1.User.findById(req.params.id);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    if (user.role !== "COURSE_REP")
+        throw (0, errors_1.badRequest)("This account isn't a course rep.");
+    user.role = "STUDENT";
+    user.responsible_subject_id = null;
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "DEMOTE_COURSE_REP",
+        targetType: "user",
+        targetId: String(user._id),
     });
     res.json({ user: user.toJSON() });
 });

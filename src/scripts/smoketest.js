@@ -83,6 +83,10 @@ async function main() {
         // same way a student does (see routes/attendance.js), so — like a
         // student — they need their own index number on file to verify against.
         index_number: "TEST/24/REP",
+        // Set directly here (bypassing the promote-course-rep route) since this
+        // fixture only needs the field for the existing check-in/roster tests
+        // below; the promotion flow itself is exercised separately in section 10.
+        responsible_subject_id: null,
     });
     const studentA = await User_1.User.create({
         role: "STUDENT",
@@ -296,6 +300,55 @@ async function main() {
     const reportAfterRepCheckIn = await api("GET", `/reports/subjects/${subject._id}`, undefined, adminToken);
     const repInReport = reportAfterRepCheckIn.json?.studentStats?.find((s) => s.studentId === String(rep._id));
     assert(reportAfterRepCheckIn.status === 200 && !!repInReport, "the course rep is counted in the subject's attendance dashboard alongside students");
+    console.log("\n10. Course reps are promoted from students, not registered directly");
+    const directCourseRepAttempt = await api("POST", "/users", { role: "COURSE_REP", name: "Direct Rep Attempt", phone: "0700000095", programId: String(program._id), indexNumber: "TEST/24/095" }, adminToken);
+    assert(directCourseRepAttempt.status === 400 && directCourseRepAttempt.json.code === "USE_PROMOTION_FLOW", "admin cannot register a course rep directly anymore — must promote an existing student");
+    const promotableStudent = await User_1.User.create({
+        role: "STUDENT",
+        name: "Promotable Student",
+        phone: "0700000094",
+        password_hash: await (0, password_1.hashPassword)("Student@123"),
+        program_id: program._id,
+    });
+    const promoteMissingIndexNumber = await api("PATCH", `/users/${promotableStudent._id}/promote-course-rep`, { subjectId: String(subject._id) }, adminToken);
+    assert(promoteMissingIndexNumber.status === 400 && promoteMissingIndexNumber.json.code === "INDEX_NUMBER_REQUIRED", "promoting a student with no index number on file is rejected");
+    await User_1.User.updateOne({ _id: promotableStudent._id }, { index_number: "TEST/24/094" });
+    const otherProgramSubject = await Subject_1.Subject.findOne({ program_id: otherProgram._id });
+    const promoteWrongProgramSubject = await api("PATCH", `/users/${promotableStudent._id}/promote-course-rep`, { subjectId: String(otherProgramSubject._id) }, adminToken);
+    assert(promoteWrongProgramSubject.status === 400 && promoteWrongProgramSubject.json.code === "PROGRAM_MISMATCH", "promoting a student to a subject outside their own program is rejected");
+    const promoteForbiddenForNonAdmin = await api("PATCH", `/users/${promotableStudent._id}/promote-course-rep`, { subjectId: String(subject._id) }, studentToken);
+    assert(promoteForbiddenForNonAdmin.status === 403, "a non-admin cannot promote a student to course rep");
+    const promoteSuccess = await api("PATCH", `/users/${promotableStudent._id}/promote-course-rep`, { subjectId: String(subject._id) }, adminToken);
+    assert(promoteSuccess.status === 200 && promoteSuccess.json.user?.role === "COURSE_REP" && promoteSuccess.json.user?.responsible_subject_id === String(subject._id), "promoting a student with a valid index number and same-program subject succeeds");
+    const promotedRepLogin = await api("POST", "/auth/login", { phone: "0700000094", password: "Student@123" });
+    assert(promotedRepLogin.status === 200, "a promoted course rep can still log in with their original student password");
+    const promotedRepToken = promotedRepLogin.json.token;
+    console.log("\n11. A course rep can only schedule lectures for their assigned subject");
+    const unassignedRep = await User_1.User.create({
+        role: "COURSE_REP",
+        name: "Unassigned Rep",
+        phone: "0700000093",
+        password_hash: await (0, password_1.hashPassword)("Rep@12345"),
+        program_id: program._id,
+        index_number: "TEST/24/093",
+    });
+    const unassignedRepLogin = await api("POST", "/auth/login", { phone: "0700000093", password: "Rep@12345" });
+    const unassignedRepToken = unassignedRepLogin.json.token;
+    const futureStart = new Date(Date.now() + 60 * 60_000).toISOString();
+    const futureEnd = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const lectureNoSubjectAssigned = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, unassignedRepToken);
+    assert(lectureNoSubjectAssigned.status === 403 && lectureNoSubjectAssigned.json.code === "NO_SUBJECT_ASSIGNED", "a course rep with no assigned subject cannot schedule any lecture");
+    const wrongSubjectLecture = await api("POST", "/lectures", { subjectId: String(otherProgramSubject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, promotedRepToken);
+    assert(wrongSubjectLecture.status === 403 && wrongSubjectLecture.json.code === "WRONG_SUBJECT", "a course rep cannot schedule a lecture for a subject other than the one they're responsible for");
+    const correctSubjectLecture = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, promotedRepToken);
+    assert(correctSubjectLecture.status === 201 && correctSubjectLecture.json.subject_id === String(subject._id), "a course rep can schedule a lecture for their own assigned subject");
+    console.log("\n12. Demoting a course rep back to a student");
+    const demoteForbiddenForNonAdmin = await api("PATCH", `/users/${promotableStudent._id}/demote-to-student`, undefined, studentToken);
+    assert(demoteForbiddenForNonAdmin.status === 403, "a non-admin cannot demote a course rep");
+    const demoteSuccess = await api("PATCH", `/users/${promotableStudent._id}/demote-to-student`, undefined, adminToken);
+    assert(demoteSuccess.status === 200 && demoteSuccess.json.user?.role === "STUDENT" && demoteSuccess.json.user?.responsible_subject_id === null, "demoting a course rep reverts their role to student and clears their assigned subject");
+    const demotedTriesLecture = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, promotedRepToken);
+    assert(demotedTriesLecture.status === 403, "after demotion, scheduling a lecture with the (still-valid, now-stale) token is rejected once the account is no longer assigned a subject");
     server.close();
     console.log(`\n${passed} passed, ${failed} failed.\n`);
     console.log("Cleaning up smoke test database...");

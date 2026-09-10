@@ -63,6 +63,13 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     const rep = await User_1.User.findById(req.session.sub);
     if (!rep?.program_id)
         throw (0, errors_1.badRequest)("Your account isn't linked to a program — contact admin.");
+    // Every course rep is responsible for exactly one subject (assigned by an
+    // admin when they were promoted — see routes/users.js's
+    // promote-course-rep route) and can only schedule lectures for that
+    // subject, not any other subject in their program.
+    if (!rep.responsible_subject_id) {
+        throw (0, errors_1.forbidden)("You haven't been assigned a subject yet — ask an admin to assign you one before scheduling lectures.", "NO_SUBJECT_ASSIGNED");
+    }
     const subjectId = String(req.body?.subjectId ?? "");
     const lectureHallId = String(req.body?.lectureHallId ?? "");
     const title = String(req.body?.title ?? "").trim();
@@ -71,9 +78,12 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     if (!subjectId || !lectureHallId || !startTime || !endTime) {
         throw (0, errors_1.badRequest)("Subject, hall, start time, and end time are all required.");
     }
+    if (subjectId !== String(rep.responsible_subject_id)) {
+        throw (0, errors_1.forbidden)("You can only schedule lectures for the subject you're responsible for.", "WRONG_SUBJECT");
+    }
     const subject = await Subject_1.Subject.findById(subjectId);
-    if (!subject || String(subject.program_id) !== String(rep.program_id)) {
-        throw (0, errors_1.forbidden)("You can only schedule lectures for subjects in your own program.");
+    if (!subject) {
+        throw (0, errors_1.notFound)("Subject");
     }
     const hall = await LectureHall_1.LectureHall.findById(lectureHallId);
     if (!hall)
