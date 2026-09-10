@@ -61,6 +61,9 @@ function verifyHallToken(token) {
 // into the QR image changes. See routes/halls.js's GET "/:id/qr" for the only
 // caller, and frontend app/scan/page.tsx for what reads the `token` param.
 function hallScanUrl(token) {
+    // env.FRONTEND_ORIGIN already has any trailing slash stripped (see
+    // env.js) so this never produces a "//scan" double slash regardless of
+    // how the env var happens to be set on whatever platform hosts this.
     return `${env_1.env.FRONTEND_ORIGIN}/scan?token=${encodeURIComponent(token)}`;
 }
 async function hallQrDataUrl(token) {
