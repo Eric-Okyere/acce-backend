@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.authRouter = void 0;
 const express_1 = require("express");
 const User_1 = require("../models/User");
+const Program_1 = require("../models/Program");
 const phone_1 = require("../lib/phone");
 const password_1 = require("../lib/password");
 const jwt_1 = require("../lib/jwt");
@@ -10,6 +11,63 @@ const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 exports.authRouter = (0, express_1.Router)();
+// Public self-registration for STUDENTS ONLY — teachers, course reps, and
+// admins are still exclusively created by an admin (see routes/users.js).
+// Eric explicitly asked for students to be able to sign themselves up rather
+// than waiting on an admin to register them one by one. Trade-off worth
+// knowing: unlike admin-created accounts, nothing here verifies that the
+// index number a student types in actually belongs to them — the schema's
+// unique index just stops the SAME number being claimed twice. An admin can
+// still deactivate or fix any bogus self-registered account from the Students
+// page if that ever becomes a problem.
+exports.authRouter.post("/register-student", async (req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    const phone = String(req.body?.phone ?? "").trim();
+    const password = String(req.body?.password ?? "");
+    const confirmPassword = String(req.body?.confirmPassword ?? "");
+    const programId = String(req.body?.programId ?? "").trim();
+    const indexNumber = String(req.body?.indexNumber ?? "").trim();
+    if (!name || !phone || !password || !programId || !indexNumber) {
+        throw (0, errors_1.badRequest)("Fill in your name, phone number, password, program, and index number.");
+    }
+    if (password.length < 8) {
+        throw (0, errors_1.badRequest)("Password must be at least 8 characters.");
+    }
+    if (password !== confirmPassword) {
+        throw (0, errors_1.badRequest)("Passwords don't match.");
+    }
+    const program = await Program_1.Program.findById(programId).catch(() => null);
+    if (!program) {
+        throw (0, errors_1.badRequest)("Choose a valid program.");
+    }
+    const normalizedPhone = (0, phone_1.normalizePhone)(phone);
+    const existingPhone = await User_1.User.findOne({ phone: normalizedPhone });
+    if (existingPhone) {
+        throw (0, errors_1.badRequest)("An account with this phone number already exists — try signing in instead.");
+    }
+    const existingIndex = await User_1.User.findOne({ index_number: indexNumber });
+    if (existingIndex) {
+        throw (0, errors_1.badRequest)("An account with this index number already exists — try signing in instead.");
+    }
+    const user = await User_1.User.create({
+        role: "STUDENT",
+        name,
+        phone: normalizedPhone,
+        password_hash: await (0, password_1.hashPassword)(password),
+        program_id: program._id,
+        index_number: indexNumber,
+        must_reset_password: false, // they chose this password themselves — nothing to reset
+    });
+    await (0, audit_1.writeAudit)({
+        actorId: String(user._id),
+        action: "SELF_REGISTER_STUDENT",
+        targetType: "user",
+        targetId: String(user._id),
+        ipAddress: req.ip ?? null,
+    });
+    const token = (0, jwt_1.signSessionToken)({ sub: String(user._id), role: user.role, name: user.name });
+    res.status(201).json({ token, user: user.toJSON() });
+});
 exports.authRouter.post("/login", async (req, res) => {
     const phone = String(req.body?.phone ?? "").trim();
     const password = String(req.body?.password ?? "");

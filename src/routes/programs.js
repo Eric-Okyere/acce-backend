@@ -7,6 +7,13 @@ const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 exports.programsRouter = (0, express_1.Router)();
+// Unauthenticated — the student self-registration page (auth/register-student)
+// needs to show the program list before the person has any account/token.
+// Deliberately minimal: id + name only, no description/source_url.
+exports.programsRouter.get("/public", async (_req, res) => {
+    const programs = await Program_1.Program.find().sort({ name: 1 }).select("_id name");
+    res.json(programs.map((p) => ({ id: String(p._id), name: p.name })));
+});
 exports.programsRouter.get("/", auth_1.authenticate, async (_req, res) => {
     const programs = await Program_1.Program.find().sort({ name: 1 });
     res.json(programs.map((p) => p.toJSON()));

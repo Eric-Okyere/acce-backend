@@ -53,6 +53,9 @@ const scanBody = (req) => ({
     lectureId: String(req.body?.lectureId ?? ""),
     qrToken: String(req.body?.qrToken ?? ""),
     deviceId: String(req.body?.deviceId ?? ""),
+    // Only required/checked on check-in (see below) — an extra "prove it's you"
+    // step on top of already being logged in, per Eric's explicit request.
+    indexNumber: String(req.body?.indexNumber ?? "").trim(),
     lat: Number(req.body?.lat),
     lng: Number(req.body?.lng),
     accuracy: req.body?.accuracy != null ? Number(req.body.accuracy) : null,
@@ -60,7 +63,13 @@ const scanBody = (req) => ({
 exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
     const input = scanBody(req);
     const studentId = req.session.sub;
-    const { lecture, distance } = await validateScan({ ...input, studentId });
+    const { lecture, distance, student } = await validateScan({ ...input, studentId });
+    if (!input.indexNumber) {
+        throw (0, errors_1.badRequest)("Enter your student index number to check in.", "INDEX_NUMBER_REQUIRED");
+    }
+    if (!student.index_number || student.index_number.trim().toUpperCase() !== input.indexNumber.toUpperCase()) {
+        throw (0, errors_1.badRequest)("That index number doesn't match our records for your account. Check what you typed and try again.", "INDEX_NUMBER_MISMATCH");
+    }
     const now = new Date();
     const earliestAllowed = new Date(lecture.start_time.getTime() - constants_1.EARLY_CHECKIN_MINUTES * 60_000);
     if (now < earliestAllowed) {
@@ -91,6 +100,12 @@ exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requi
             user_agent: req.headers["user-agent"] ?? null,
         });
     }
+    // Per Eric's explicit direction: checking in (QR verified + inside the
+    // geofence + own index number confirmed) marks the student PRESENT
+    // immediately — this is no longer a two-step "prove you stayed the whole
+    // lecture" design. Check-out (below) still exists and still records a
+    // departure time/location if a student uses it, but it no longer gates
+    // the PRESENT status the way it used to.
     const record = await AttendanceRecord_1.AttendanceRecord.findOneAndUpdate({ lecture_id: lecture._id, student_id: studentId }, {
         check_in_at: now,
         check_in_lat: input.lat,
@@ -98,7 +113,7 @@ exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requi
         check_in_distance_m: distance,
         check_in_accuracy_m: input.accuracy,
         device_id: input.deviceId,
-        status: "INCOMPLETE",
+        status: "PRESENT",
         updated_at: now,
     }, { upsert: true, new: true, setDefaultsOnInsert: true });
     await (0, audit_1.writeAudit)({
@@ -106,10 +121,10 @@ exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requi
         action: "CHECK_IN",
         targetType: "lecture",
         targetId: String(lecture._id),
-        metadata: { distance, lat: input.lat, lng: input.lng },
+        metadata: { distance, lat: input.lat, lng: input.lng, indexNumber: input.indexNumber },
         ipAddress: req.ip ?? null,
     });
-    res.json({ success: "Checked in! Remember to check out right when the lecture ends.", record: record.toJSON() });
+    res.json({ success: "You're checked in and marked present for this lecture.", record: record.toJSON() });
 });
 exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT"), async (req, res) => {
     const input = scanBody(req);
@@ -130,7 +145,7 @@ exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requ
         throw (0, errors_1.badRequest)(`Checkout opens exactly when the lecture ends (${lecture.end_time.toLocaleTimeString()}).`, "TOO_EARLY_CHECKOUT");
     }
     if (now > graceEnd) {
-        throw (0, errors_1.badRequest)(`The checkout window closed ${lecture.checkout_grace_minutes} minutes after the lecture ended. Your attendance is recorded as incomplete — contact your course rep.`, "CHECKOUT_WINDOW_CLOSED");
+        throw (0, errors_1.badRequest)(`The checkout window closed ${lecture.checkout_grace_minutes} minutes after the lecture ended — you're still marked present, this just would have recorded your departure time.`, "CHECKOUT_WINDOW_CLOSED");
     }
     existing.check_out_at = now;
     existing.check_out_lat = input.lat;
@@ -148,7 +163,7 @@ exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requ
         metadata: { distance, lat: input.lat, lng: input.lng },
         ipAddress: req.ip ?? null,
     });
-    res.json({ success: "Checked out — you're marked present for this lecture.", record: existing.toJSON() });
+    res.json({ success: "Checked out — your departure time has been recorded. You were already marked present at check-in.", record: existing.toJSON() });
 });
 // Called right after the camera decodes a hall's QR: verifies the signature and
 // returns which of the student's own lectures are happening at that hall right now.

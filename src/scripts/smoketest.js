@@ -150,11 +150,16 @@ async function main() {
     const deviceA = "device-fingerprint-A";
     const wrongQr = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: wrongHall.qr_token, deviceId: deviceA, lat: hallLat, lng: hallLng }, studentToken);
     assert(wrongQr.status === 400 && wrongQr.json.code === "WRONG_HALL", "checking in with the wrong hall's QR code is rejected");
-    const outOfRange = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, lat: 0, lng: 0 }, studentToken);
+    const outOfRange = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, indexNumber: "TEST/24/001", lat: 0, lng: 0 }, studentToken);
     assert(outOfRange.status === 400 && outOfRange.json.code === "OUT_OF_RANGE", "checking in from far outside the geofence is rejected");
-    const checkIn = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, lat: hallLat, lng: hallLng }, studentToken);
-    assert(checkIn.status === 200, "student checks in successfully from the correct hall and device");
-    const doubleCheckIn = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, lat: hallLat, lng: hallLng }, studentToken);
+    const missingIndexNumber = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, lat: hallLat, lng: hallLng }, studentToken);
+    assert(missingIndexNumber.status === 400 && missingIndexNumber.json.code === "INDEX_NUMBER_REQUIRED", "checking in without an index number is rejected");
+    const wrongIndexNumber = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, indexNumber: "NOT/MY/NUMBER", lat: hallLat, lng: hallLng }, studentToken);
+    assert(wrongIndexNumber.status === 400 && wrongIndexNumber.json.code === "INDEX_NUMBER_MISMATCH", "checking in with someone else's index number is rejected");
+    const checkIn = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, indexNumber: "TEST/24/001", lat: hallLat, lng: hallLng }, studentToken);
+    assert(checkIn.status === 200, "student checks in successfully from the correct hall and device with their own index number");
+    assert(checkIn.json.record?.status === "PRESENT", "check-in alone marks the student PRESENT (no checkout required)");
+    const doubleCheckIn = await api("POST", "/attendance/check-in", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, indexNumber: "TEST/24/001", lat: hallLat, lng: hallLng }, studentToken);
     assert(doubleCheckIn.status === 400 && doubleCheckIn.json.code === "ALREADY_CHECKED_IN", "checking in twice to the same lecture is rejected");
     const tooEarlyCheckout = await api("POST", "/attendance/check-out", { lectureId: String(lecture._id), qrToken: hall.qr_token, deviceId: deviceA, lat: hallLat, lng: hallLng }, studentToken);
     assert(tooEarlyCheckout.status === 400 && tooEarlyCheckout.json.code === "TOO_EARLY_CHECKOUT", "checking out before the lecture ends is rejected");
@@ -185,10 +190,62 @@ async function main() {
         lectureId: String(afterResetLecture._id),
         qrToken: hall.qr_token,
         deviceId: "device-fingerprint-B-new-phone",
+        indexNumber: "TEST/24/001",
         lat: hallLat,
         lng: hallLng,
     }, studentToken);
     assert(checkInNewDevice.status === 200, "after an admin reset, the student can check in from a brand-new device");
+    console.log("\n7. Student self-registration");
+    const selfReg = await api("POST", "/auth/register-student", {
+        name: "Self-Registered Student",
+        phone: "0700000099",
+        password: "MyOwnPass123",
+        confirmPassword: "MyOwnPass123",
+        programId: String(program._id),
+        indexNumber: "TEST/24/099",
+    });
+    assert(selfReg.status === 201 && selfReg.json.token, "a student can self-register and receives a session token immediately");
+    const selfRegLogin = await api("POST", "/auth/login", { phone: "0700000099", password: "MyOwnPass123" });
+    assert(selfRegLogin.status === 200 && selfRegLogin.json.token, "a self-registered student can log in normally afterwards");
+    const dupPhoneReg = await api("POST", "/auth/register-student", {
+        name: "Duplicate Phone",
+        phone: "0700000099",
+        password: "AnotherPass123",
+        confirmPassword: "AnotherPass123",
+        programId: String(program._id),
+        indexNumber: "TEST/24/100",
+    });
+    assert(dupPhoneReg.status === 400, "self-registration rejects a phone number that's already in use");
+    const dupIndexReg = await api("POST", "/auth/register-student", {
+        name: "Duplicate Index Number",
+        phone: "0700000098",
+        password: "AnotherPass123",
+        confirmPassword: "AnotherPass123",
+        programId: String(program._id),
+        indexNumber: "TEST/24/099",
+    });
+    assert(dupIndexReg.status === 400, "self-registration rejects an index number that's already in use");
+    const mismatchedPasswordsReg = await api("POST", "/auth/register-student", {
+        name: "Mismatched Passwords",
+        phone: "0700000097",
+        password: "AnotherPass123",
+        confirmPassword: "DoesNotMatch123",
+        programId: String(program._id),
+        indexNumber: "TEST/24/101",
+    });
+    assert(mismatchedPasswordsReg.status === 400, "self-registration rejects mismatched passwords");
+    const publicPrograms = await api("GET", "/programs/public");
+    assert(publicPrograms.status === 200 && Array.isArray(publicPrograms.json) && publicPrograms.json.length > 0, "the public program list is reachable without a token");
+    // Confirms the models/User.js index_number fix actually works: a second
+    // teacher/admin/course-rep with no index number at all must NOT collide
+    // with each other via the sparse unique index (see the fix's comment).
+    const secondTeacherNoIndexNumber = await User_1.User.create({
+        role: "TEACHER",
+        name: "Teacher C (no index number, regression check)",
+        phone: "0700000096",
+        password_hash: await (0, password_1.hashPassword)("Teacher@123"),
+    });
+    assert(!!secondTeacherNoIndexNumber._id, "a second user with no index number at all can still be created (sparse unique index regression check)");
     server.close();
     console.log(`\n${passed} passed, ${failed} failed.\n`);
     console.log("Cleaning up smoke test database...");
