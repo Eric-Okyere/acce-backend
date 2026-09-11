@@ -5,12 +5,51 @@ const express_1 = require("express");
 const Subject_1 = require("../models/Subject");
 const Lecture_1 = require("../models/Lecture");
 const LectureHall_1 = require("../models/LectureHall");
+const User_1 = require("../models/User");
 const AttendanceRecord_1 = require("../models/AttendanceRecord");
 const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const lecturePhase_1 = require("../lib/lecturePhase");
 const enrollment_1 = require("../lib/enrollment");
 exports.reportsRouter = (0, express_1.Router)();
+// A student's (or course rep's) own attendance broken down by course — "how
+// many of Child Development's lectures have I actually been present for, out
+// of how many have been held so far". Scoped to the courses they're
+// currently offering (see lib/enrollment.js) — the same set that determines
+// which teacher rosters they appear on — not every subject in their program.
+// Deliberately its own lightweight route rather than reusing
+// "/subjects/:id" below: that one builds a full per-lecture, whole-roster
+// dashboard for a teacher/admin, which is far more than a student needs for
+// their own numbers and isn't role-permitted to them anyway.
+exports.reportsRouter.get("/me/courses", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
+    const student = await User_1.User.findById(req.session.sub);
+    if (!student?.program_id) {
+        res.json([]);
+        return;
+    }
+    const subjectIds = await (0, enrollment_1.subjectIdsForStudent)(student);
+    const subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } }).sort({ name: 1 });
+    const results = await Promise.all(subjects.map(async (subject) => {
+        const lectures = await Lecture_1.Lecture.find({ subject_id: subject._id, status: { $ne: "CANCELLED" } });
+        // "Held so far" means ENDED — a SCHEDULED/ONGOING lecture hasn't
+        // finished yet, so it isn't a fair denominator yet either way.
+        const ended = lectures.filter((l) => (0, lecturePhase_1.lecturePhase)(l) === "ENDED");
+        const records = await AttendanceRecord_1.AttendanceRecord.find({
+            lecture_id: { $in: ended.map((l) => l._id) },
+            student_id: student._id,
+        });
+        const present = records.filter((r) => r.status === "PRESENT").length;
+        const total = ended.length;
+        return {
+            subjectId: String(subject._id),
+            subjectName: subject.name,
+            present,
+            total,
+            rate: total > 0 ? Math.round((present / total) * 1000) / 10 : 0,
+        };
+    }));
+    res.json(results);
+});
 // Comprehensive per-subject attendance dashboard: a teacher's own subject only
 // (enforced below), or any subject for an admin.
 exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN", "TEACHER"), async (req, res) => {

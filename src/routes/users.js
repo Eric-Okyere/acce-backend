@@ -32,6 +32,49 @@ exports.usersRouter.get("/me", auth_1.authenticate, async (req, res) => {
     }
     res.json(user.toJSON());
 });
+// Self-service: a STUDENT (or COURSE_REP) sets/changes which courses THEY say
+// they're offering — separate from the admin-only PATCH "/:id" below, since a
+// student obviously can't call an ADMIN-only route on their own account. This
+// is what powers the "choose your courses" prompt on the student dashboard
+// for an account that hasn't picked any yet (or wants to change its picks)
+// without needing to go through an admin. Always a full replacement of the
+// list, same convention as everywhere else subjects are assigned
+// (promote-course-rep, the admin edit route) — and, unlike those, requires at
+// least one course: an empty list here would just put the account right back
+// into lib/enrollment.js's "offering everything in the program" fallback,
+// silently undoing the whole point of asking.
+exports.usersRouter.patch("/me/subjects", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
+    const rawSubjectIds = Array.isArray(req.body?.subjectIds) ? req.body.subjectIds : [];
+    const subjectIds = [...new Set(rawSubjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    if (subjectIds.length === 0) {
+        throw (0, errors_1.badRequest)("Choose at least one course you're offering.");
+    }
+    const user = await User_1.User.findById(req.session.sub);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    if (!user.program_id) {
+        throw (0, errors_1.badRequest)("Your account isn't linked to a program — contact admin.");
+    }
+    const subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } });
+    if (subjects.length !== subjectIds.length) {
+        throw (0, errors_1.notFound)("Subject");
+    }
+    const wrongProgramSubject = subjects.find((s) => String(s.program_id) !== String(user.program_id));
+    if (wrongProgramSubject) {
+        throw (0, errors_1.badRequest)(`"${wrongProgramSubject.name}" isn't a course in your program.`);
+    }
+    user.enrolled_subject_ids = subjects.map((s) => s._id);
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "UPDATE_OWN_SUBJECTS",
+        targetType: "user",
+        targetId: String(user._id),
+        metadata: { subjectIds: subjects.map((s) => String(s._id)), subjectNames: subjects.map((s) => s.name) },
+    });
+    res.json({ user: user.toJSON() });
+});
 // Admin-only listing, e.g. GET /api/users?role=TEACHER or ?role=STUDENT&programId=...
 exports.usersRouter.get("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const role = String(req.query.role ?? "");
