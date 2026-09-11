@@ -16,6 +16,7 @@ const geo_1 = require("../lib/geo");
 const lecturePhase_1 = require("../lib/lecturePhase");
 const lectures_1 = require("./lectures");
 const constants_1 = require("../lib/constants");
+const enrollment_1 = require("../lib/enrollment");
 exports.attendanceRouter = (0, express_1.Router)();
 /** Everything a scan (check-in or check-out) needs to validate before touching the record. */
 async function validateScan(input) {
@@ -42,6 +43,22 @@ async function validateScan(input) {
         throw (0, errors_1.badRequest)("Only students and course reps can check in to lectures.", "NOT_STUDENT");
     if (String(student.program_id) !== String(subject.program_id)) {
         throw (0, errors_1.badRequest)("This lecture is not part of your program's timetable.", "WRONG_PROGRAM");
+    }
+    if (!(0, enrollment_1.studentOffersSubject)(student, subject)) {
+        throw (0, errors_1.badRequest)(`You're not registered as offering "${subject.name}" — ask an admin to update your courses if this is wrong.`, "NOT_OFFERING_SUBJECT");
+    }
+    // A location is REQUIRED, not just checked when present. Without this,
+    // anything that isn't a real finite lat/lng (missing, non-numeric, or a
+    // client that skips the browser's geolocation prompt entirely and calls
+    // the API directly) becomes NaN once it reaches distanceMeters() below —
+    // and `NaN > hall.radius_meters` evaluates to `false` in JS, which would
+    // silently let a check-in/out through with NO location check at all.
+    // isValidCoordinate() already existed in lib/geo.js (used when an admin
+    // sets a hall's own coordinates) but was never applied to a student's
+    // submitted location — this is that same guard, applied here too, so a
+    // scan can never bypass the geofence by simply not providing one.
+    if (!(0, geo_1.isValidCoordinate)(input.lat, input.lng)) {
+        throw (0, errors_1.badRequest)("We couldn't get a valid location from your device. Make sure location access is allowed for this site and try again.", "INVALID_LOCATION");
     }
     const distance = (0, geo_1.distanceMeters)(input.lat, input.lng, hall.latitude, hall.longitude);
     if (distance > hall.radius_meters) {
@@ -180,7 +197,7 @@ exports.attendanceRouter.post("/resolve-scan", auth_1.authenticate, (0, auth_1.r
     if (!hall)
         throw (0, errors_1.badRequest)("That lecture hall could not be found.", "NO_HALL");
     const now = Date.now();
-    const lectures = await (0, lectures_1.lecturesAtHallForProgram)(hall.id, String(student.program_id));
+    const lectures = await (0, lectures_1.lecturesAtHallForStudent)(hall.id, student);
     const relevant = lectures.filter((l) => {
         const start = l.start_time.getTime();
         const end = l.end_time.getTime();
@@ -220,8 +237,8 @@ exports.attendanceRouter.get("/history/me", auth_1.authenticate, (0, auth_1.requ
         res.json([]);
         return;
     }
-    const subjects = await Subject_1.Subject.find({ program_id: student.program_id });
-    const subjectIds = subjects.map((s) => s._id);
+    const subjectIds = await (0, enrollment_1.subjectIdsForStudent)(student);
+    const subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } });
     const subjectById = new Map(subjects.map((s) => [String(s._id), s]));
     const lectures = await Lecture_1.Lecture.find({
         subject_id: { $in: subjectIds },

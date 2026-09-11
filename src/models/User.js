@@ -29,6 +29,16 @@ const userSchema = new mongoose_1.Schema({
     // reps are no longer created directly (they're promoted from an existing
     // student account).
     responsible_subject_ids: { type: [{ type: mongoose_1.Schema.Types.ObjectId, ref: "Subject" }], default: [] },
+    // The course(s) a STUDENT says they're offering, chosen at registration
+    // (or set/edited later by an admin from the Students page) — this is what
+    // makes their name appear on a teacher's roster/report for that subject
+    // (see lib/enrollment.js). A course rep's own enrollment (if any) is
+    // additive to their responsible_subject_ids, not a replacement for it.
+    // Accounts that predate this feature have an empty array here — see
+    // lib/enrollment.js for the backward-compatible fallback that treats an
+    // empty list as "every subject in their program", same as the system
+    // behaved before course selection existed.
+    enrolled_subject_ids: { type: [{ type: mongoose_1.Schema.Types.ObjectId, ref: "Subject" }], default: [] },
     is_active: { type: Boolean, default: true },
     must_reset_password: { type: Boolean, default: true },
     created_at: { type: Date, default: Date.now },

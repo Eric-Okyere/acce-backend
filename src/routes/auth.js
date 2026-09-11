@@ -4,6 +4,7 @@ exports.authRouter = void 0;
 const express_1 = require("express");
 const User_1 = require("../models/User");
 const Program_1 = require("../models/Program");
+const Subject_1 = require("../models/Subject");
 const phone_1 = require("../lib/phone");
 const password_1 = require("../lib/password");
 const jwt_1 = require("../lib/jwt");
@@ -27,6 +28,8 @@ exports.authRouter.post("/register-student", async (req, res) => {
     const confirmPassword = String(req.body?.confirmPassword ?? "");
     const programId = String(req.body?.programId ?? "").trim();
     const indexNumber = String(req.body?.indexNumber ?? "").trim();
+    const rawSubjectIds = Array.isArray(req.body?.subjectIds) ? req.body.subjectIds : [];
+    const subjectIds = [...new Set(rawSubjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (!name || !phone || !password || !programId || !indexNumber) {
         throw (0, errors_1.badRequest)("Fill in your name, phone number, password, program, and index number.");
     }
@@ -36,9 +39,20 @@ exports.authRouter.post("/register-student", async (req, res) => {
     if (password !== confirmPassword) {
         throw (0, errors_1.badRequest)("Passwords don't match.");
     }
+    if (subjectIds.length === 0) {
+        throw (0, errors_1.badRequest)("Choose at least one course you're offering — this is what shows your name to the teacher for that course.");
+    }
     const program = await Program_1.Program.findById(programId).catch(() => null);
     if (!program) {
         throw (0, errors_1.badRequest)("Choose a valid program.");
+    }
+    const subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } });
+    if (subjects.length !== subjectIds.length) {
+        throw (0, errors_1.badRequest)("One of the selected courses could not be found — refresh the page and try again.");
+    }
+    const wrongProgramSubject = subjects.find((s) => String(s.program_id) !== String(program._id));
+    if (wrongProgramSubject) {
+        throw (0, errors_1.badRequest)(`"${wrongProgramSubject.name}" isn't a course in the program you selected.`);
     }
     const normalizedPhone = (0, phone_1.normalizePhone)(phone);
     const existingPhone = await User_1.User.findOne({ phone: normalizedPhone });
@@ -56,6 +70,7 @@ exports.authRouter.post("/register-student", async (req, res) => {
         password_hash: await (0, password_1.hashPassword)(password),
         program_id: program._id,
         index_number: indexNumber,
+        enrolled_subject_ids: subjects.map((s) => s._id),
         must_reset_password: false, // they chose this password themselves — nothing to reset
     });
     await (0, audit_1.writeAudit)({

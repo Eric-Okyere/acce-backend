@@ -5,11 +5,11 @@ const express_1 = require("express");
 const Subject_1 = require("../models/Subject");
 const Lecture_1 = require("../models/Lecture");
 const LectureHall_1 = require("../models/LectureHall");
-const User_1 = require("../models/User");
 const AttendanceRecord_1 = require("../models/AttendanceRecord");
 const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const lecturePhase_1 = require("../lib/lecturePhase");
+const enrollment_1 = require("../lib/enrollment");
 exports.reportsRouter = (0, express_1.Router)();
 // Comprehensive per-subject attendance dashboard: a teacher's own subject only
 // (enforced below), or any subject for an admin.
@@ -20,12 +20,11 @@ exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requi
     if (req.session.role === "TEACHER" && String(subject.teacher_id) !== req.session.sub) {
         throw (0, errors_1.forbidden)("You can only view the dashboard for your own subjects.");
     }
-    // Course reps attend lectures and check in the same way a student does
-    // (see routes/attendance.js) — include them in the roster/dashboard so
-    // their attendance is actually counted, not silently dropped.
-    const roster = await User_1.User.find({ role: { $in: ["STUDENT", "COURSE_REP"] }, program_id: subject.program_id, is_active: true })
-        .select("_id name index_number")
-        .sort({ name: 1 });
+    // Only students (and course reps) actually offering THIS subject — see
+    // lib/enrollment.js — not every student in the program. Course reps
+    // attend lectures and check in the same way a student does (see
+    // routes/attendance.js) so they're included the same way.
+    const roster = await (0, enrollment_1.getSubjectRoster)(subject);
     const allLectures = await Lecture_1.Lecture.find({ subject_id: subject._id, status: { $ne: "CANCELLED" } }).sort({
         start_time: 1,
     });

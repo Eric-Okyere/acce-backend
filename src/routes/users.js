@@ -4,6 +4,9 @@ exports.usersRouter = void 0;
 const express_1 = require("express");
 const User_1 = require("../models/User");
 const Subject_1 = require("../models/Subject");
+const Program_1 = require("../models/Program");
+const Device_1 = require("../models/Device");
+const AttendanceRecord_1 = require("../models/AttendanceRecord");
 const phone_1 = require("../lib/phone");
 const password_1 = require("../lib/password");
 const auth_1 = require("../middleware/auth");
@@ -47,6 +50,8 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
     const phone = String(req.body?.phone ?? "").trim();
     const programId = String(req.body?.programId ?? "").trim();
     const indexNumber = String(req.body?.indexNumber ?? "").trim();
+    const rawSubjectIds = Array.isArray(req.body?.subjectIds) ? req.body.subjectIds : [];
+    const subjectIds = [...new Set(rawSubjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (!VALID_ROLES.includes(role) || role === "ADMIN")
         throw (0, errors_1.badRequest)("Invalid role.");
     if (!DIRECTLY_CREATABLE_ROLES.includes(role)) {
@@ -56,6 +61,23 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
         throw (0, errors_1.badRequest)("Name and phone number are required.");
     if (role === "STUDENT" && !programId) {
         throw (0, errors_1.badRequest)("A program is required for this role.");
+    }
+    // The courses this student is offering are optional here (unlike
+    // self-registration — see routes/auth.js) since an admin may not know
+    // them yet; left empty, lib/enrollment.js falls back to treating the
+    // student as offering every subject in their program, same as before
+    // this feature existed. If subjects ARE given, they must belong to the
+    // chosen program.
+    let subjects = [];
+    if (role === "STUDENT" && subjectIds.length > 0) {
+        subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } });
+        if (subjects.length !== subjectIds.length) {
+            throw (0, errors_1.notFound)("Subject");
+        }
+        const wrongProgramSubject = subjects.find((s) => String(s.program_id) !== programId);
+        if (wrongProgramSubject) {
+            throw (0, errors_1.badRequest)(`"${wrongProgramSubject.name}" isn't a course in the selected program.`);
+        }
     }
     const normalizedPhone = (0, phone_1.normalizePhone)(phone);
     const existing = await User_1.User.findOne({ phone: normalizedPhone });
@@ -71,6 +93,7 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
         // `undefined` (not `null`) when absent — see the comment on the schema
         // field in models/User.js for why this matters for the sparse index.
         index_number: indexNumber || undefined,
+        enrolled_subject_ids: subjects.map((s) => s._id),
     });
     await (0, audit_1.writeAudit)({
         actorId: req.session.sub,
@@ -79,6 +102,113 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
         targetId: String(user._id),
     });
     res.status(201).json({ user: user.toJSON(), tempPassword });
+});
+// General admin edit — name, phone, index number, program, and (for a
+// student) which courses they're offering. Built for the Students page's
+// "Edit" control; every field is optional in the request body EXCEPT
+// subjectIds, which — like promote-course-rep — is always a full replacement
+// of the list whenever the key is present at all (even an empty array), so
+// the admin's checkbox form can clear every selection back to "none picked"
+// (which lib/enrollment.js then treats as "offering everything in their
+// program", same fallback as a never-updated account). Admin accounts can't
+// be edited here — this route is for teacher/course-rep/student housekeeping.
+exports.usersRouter.patch("/:id", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const user = await User_1.User.findById(req.params.id);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    if (user.role === "ADMIN") {
+        throw (0, errors_1.badRequest)("Admin accounts can't be edited from here.");
+    }
+    if (req.body?.name !== undefined) {
+        const name = String(req.body.name).trim();
+        if (!name)
+            throw (0, errors_1.badRequest)("Name can't be empty.");
+        user.name = name;
+    }
+    if (req.body?.phone !== undefined) {
+        const phone = String(req.body.phone).trim();
+        if (!phone)
+            throw (0, errors_1.badRequest)("Phone number can't be empty.");
+        const normalizedPhone = (0, phone_1.normalizePhone)(phone);
+        const clash = await User_1.User.findOne({ phone: normalizedPhone, _id: { $ne: user._id } });
+        if (clash)
+            throw (0, errors_1.badRequest)("Another account already uses this phone number.");
+        user.phone = normalizedPhone;
+    }
+    if (req.body?.indexNumber !== undefined) {
+        const indexNumber = String(req.body.indexNumber).trim();
+        if (indexNumber) {
+            const clash = await User_1.User.findOne({ index_number: indexNumber, _id: { $ne: user._id } });
+            if (clash)
+                throw (0, errors_1.badRequest)("That index number is already in use by someone else.", "INDEX_NUMBER_TAKEN");
+            user.index_number = indexNumber;
+        }
+    }
+    let effectiveProgramId = user.program_id ? String(user.program_id) : "";
+    if (req.body?.programId !== undefined) {
+        const programId = String(req.body.programId).trim();
+        if (!programId)
+            throw (0, errors_1.badRequest)("A program is required.");
+        const program = await Program_1.Program.findById(programId).catch(() => null);
+        if (!program)
+            throw (0, errors_1.badRequest)("Choose a valid program.");
+        user.program_id = program._id;
+        effectiveProgramId = String(program._id);
+    }
+    if (Array.isArray(req.body?.subjectIds)) {
+        const subjectIds = [...new Set(req.body.subjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+        if (subjectIds.length > 0) {
+            const subjects = await Subject_1.Subject.find({ _id: { $in: subjectIds } });
+            if (subjects.length !== subjectIds.length) {
+                throw (0, errors_1.notFound)("Subject");
+            }
+            const wrongProgramSubject = subjects.find((s) => String(s.program_id) !== effectiveProgramId);
+            if (wrongProgramSubject) {
+                throw (0, errors_1.badRequest)(`"${wrongProgramSubject.name}" isn't a course in this student's program.`);
+            }
+        }
+        user.enrolled_subject_ids = subjectIds;
+    }
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "UPDATE_USER",
+        targetType: "user",
+        targetId: String(user._id),
+    });
+    res.json({ user: user.toJSON() });
+});
+// Admin deletes a user outright — mainly for the Students page (a duplicate
+// or mistakenly self-registered account). Blocked for admin accounts and for
+// deleting yourself, as a safety rail. Their device binding and attendance
+// history are deleted too — orphaned records tied to a gone account's id
+// serve no purpose and would just look like a bug (a "ghost" roster entry)
+// anywhere they're referenced. Lectures and audit log entries the user
+// authored/appears in are left as historical record.
+exports.usersRouter.delete("/:id", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const user = await User_1.User.findById(req.params.id);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    if (user.role === "ADMIN") {
+        throw (0, errors_1.badRequest)("Admin accounts can't be deleted.");
+    }
+    if (String(user._id) === req.session.sub) {
+        throw (0, errors_1.badRequest)("You can't delete your own account.");
+    }
+    await Promise.all([
+        Device_1.Device.deleteOne({ student_id: user._id }),
+        AttendanceRecord_1.AttendanceRecord.deleteMany({ student_id: user._id }),
+    ]);
+    await user.deleteOne();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "DELETE_USER",
+        targetType: "user",
+        targetId: String(req.params.id),
+        metadata: { name: user.name, phone: user.phone, role: user.role },
+    });
+    res.json({ success: true });
 });
 exports.usersRouter.patch("/:id/active", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const isActive = Boolean(req.body?.isActive);

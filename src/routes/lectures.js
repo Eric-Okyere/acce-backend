@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.lecturesRouter = void 0;
-exports.lecturesAtHallForProgram = lecturesAtHallForProgram;
+exports.lecturesAtHallForStudent = lecturesAtHallForStudent;
 const express_1 = require("express");
 const Lecture_1 = require("../models/Lecture");
 const Subject_1 = require("../models/Subject");
@@ -13,21 +13,22 @@ const audit_1 = require("../lib/audit");
 const roster_1 = require("../lib/roster");
 const lecturePhase_1 = require("../lib/lecturePhase");
 const constants_1 = require("../lib/constants");
+const enrollment_1 = require("../lib/enrollment");
 exports.lecturesRouter = (0, express_1.Router)();
 // Course rep's own scheduled lectures.
 exports.lecturesRouter.get("/mine", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP"), async (req, res) => {
     const lectures = await Lecture_1.Lecture.find({ course_rep_id: req.session.sub }).sort({ start_time: -1 });
     res.json(lectures.map((l) => l.toJSON()));
 });
-// A student's own program's upcoming/ongoing lectures.
+// A student's own upcoming/ongoing lectures — scoped to the courses they're
+// actually offering (see lib/enrollment.js), not every subject in their program.
 exports.lecturesRouter.get("/for-program/upcoming", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
     const student = await User_1.User.findById(req.session.sub);
     if (!student?.program_id) {
         res.json([]);
         return;
     }
-    const subjects = await Subject_1.Subject.find({ program_id: student.program_id }).select("_id");
-    const subjectIds = subjects.map((s) => s._id);
+    const subjectIds = await (0, enrollment_1.subjectIdsForStudent)(student);
     const lectures = await Lecture_1.Lecture.find({ subject_id: { $in: subjectIds }, status: { $ne: "CANCELLED" } }).sort({
         start_time: 1,
     });
@@ -124,9 +125,10 @@ exports.lecturesRouter.patch("/:id/cancel", auth_1.authenticate, (0, auth_1.requ
     res.json(lecture.toJSON());
 });
 // Referenced by the student scan flow — kept here since it's still "which lectures at this hall".
-async function lecturesAtHallForProgram(hallId, programId) {
-    const subjects = await Subject_1.Subject.find({ program_id: programId }).select("_id");
-    const subjectIds = subjects.map((s) => s._id);
+// Scoped to the courses this specific student/course-rep is offering (see
+// lib/enrollment.js), not every subject in their program.
+async function lecturesAtHallForStudent(hallId, student) {
+    const subjectIds = await (0, enrollment_1.subjectIdsForStudent)(student);
     return Lecture_1.Lecture.find({
         lecture_hall_id: hallId,
         subject_id: { $in: subjectIds },
