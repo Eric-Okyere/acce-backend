@@ -25,6 +25,17 @@ async function findDuplicateSubject(programId, name, excludeId) {
         filter._id = { $ne: excludeId };
     return Subject_1.Subject.findOne(filter);
 }
+// Case-insensitive, whitespace-normalized duplicate check for a course code —
+// unlike the name check above, this is deliberately GLOBAL (no program
+// scoping). A course code (e.g. "JHS-MATH-201") is a school-wide identifier,
+// not a per-program label like a course name can legitimately be, so the
+// same code must never appear on two different courses anywhere.
+async function findDuplicateSubjectCode(code, excludeId) {
+    const filter = { code: { $regex: new RegExp(`^${(0, text_1.escapeRegExp)(code)}$`, "i") } };
+    if (excludeId)
+        filter._id = { $ne: excludeId };
+    return Subject_1.Subject.findOne(filter);
+}
 // Unauthenticated — same reasoning as programs/public (see routes/programs.js):
 // the student self-registration page needs to show each program's course list
 // (so a new student can pick which they're offering) before they have any
@@ -49,7 +60,7 @@ exports.subjectsRouter.get("/", auth_1.authenticate, async (req, res) => {
 exports.subjectsRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const programId = String(req.body?.programId ?? "");
     const name = (0, text_1.normalizeWhitespace)(req.body?.name);
-    const code = String(req.body?.code ?? "").trim();
+    const code = (0, text_1.normalizeWhitespace)(req.body?.code);
     const teacherId = String(req.body?.teacherId ?? "").trim();
     const level = Number(req.body?.level);
     if (!programId || !name)
@@ -63,6 +74,15 @@ exports.subjectsRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("A
     if (duplicate) {
         throw (0, errors_1.badRequest)(`"${duplicate.name}" already exists in this program — choose a different name, or edit the existing course instead.`, "DUPLICATE_SUBJECT");
     }
+    // Course codes are optional, but when one is given it must be unique
+    // school-wide (see findDuplicateSubjectCode above) — no two courses,
+    // even in different programs, may share a code.
+    if (code) {
+        const duplicateCode = await findDuplicateSubjectCode(code);
+        if (duplicateCode) {
+            throw (0, errors_1.badRequest)(`Course code "${duplicateCode.code}" is already used by "${duplicateCode.name}" — course codes must be unique.`, "DUPLICATE_SUBJECT_CODE");
+        }
+    }
     let subject;
     try {
         subject = await Subject_1.Subject.create({
@@ -74,11 +94,15 @@ exports.subjectsRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("A
         });
     }
     catch (e) {
-        // Narrow race: two admins submit the identical name for the same
-        // program at almost the same moment, both pass the check above, and
-        // the DB's own unique index (program_id + name) rejects the second
-        // insert. Same friendly message as the pre-check, not the generic
-        // "That value is already in use." from the global error handler.
+        // Narrow race: two admins submit the identical name (or code) at
+        // almost the same moment, both pass the checks above, and the DB's
+        // own unique index (program_id + name) rejects the second insert.
+        // Same friendly message as the pre-check, not the generic "That
+        // value is already in use." from the global error handler. (There's
+        // no DB-level unique index on `code` — see the comment on the
+        // schema field in models/Subject.js — so a code race isn't caught
+        // here, only the pre-check above; low-risk for an admin-only,
+        // low-frequency action.)
         if (e && typeof e === "object" && "code" in e && e.code === 11000) {
             throw (0, errors_1.badRequest)(`"${name}" already exists in this program — choose a different name, or edit the existing course instead.`, "DUPLICATE_SUBJECT");
         }
