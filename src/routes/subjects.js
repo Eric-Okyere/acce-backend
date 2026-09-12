@@ -7,6 +7,7 @@ const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 exports.subjectsRouter = (0, express_1.Router)();
+const VALID_LEVELS = [100, 200, 300, 400];
 // Unauthenticated — same reasoning as programs/public (see routes/programs.js):
 // the student self-registration page needs to show each program's course list
 // (so a new student can pick which they're offering) before they have any
@@ -16,8 +17,8 @@ exports.subjectsRouter.get("/public", async (req, res) => {
     const filter = { is_active: true };
     if (req.query.programId)
         filter.program_id = req.query.programId;
-    const subjects = await Subject_1.Subject.find(filter).sort({ name: 1 }).select("_id name program_id");
-    res.json(subjects.map((s) => ({ id: String(s._id), name: s.name, programId: String(s.program_id) })));
+    const subjects = await Subject_1.Subject.find(filter).sort({ name: 1 }).select("_id name program_id level");
+    res.json(subjects.map((s) => ({ id: String(s._id), name: s.name, programId: String(s.program_id), level: s.level ?? null })));
 });
 exports.subjectsRouter.get("/", auth_1.authenticate, async (req, res) => {
     const filter = { is_active: true };
@@ -33,12 +34,16 @@ exports.subjectsRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("A
     const name = String(req.body?.name ?? "").trim();
     const code = String(req.body?.code ?? "").trim();
     const teacherId = String(req.body?.teacherId ?? "").trim();
+    const level = Number(req.body?.level);
     if (!programId || !name)
         throw (0, errors_1.badRequest)("Program and subject name are required.");
+    if (!VALID_LEVELS.includes(level))
+        throw (0, errors_1.badRequest)("Choose a level for this course — 100, 200, 300 or 400.");
     const subject = await Subject_1.Subject.create({
         program_id: programId,
         name,
         code: code || null,
+        level,
         teacher_id: teacherId || null,
     });
     await (0, audit_1.writeAudit)({
@@ -59,6 +64,22 @@ exports.subjectsRouter.patch("/:id/teacher", auth_1.authenticate, (0, auth_1.req
         action: "ASSIGN_TEACHER",
         targetType: "subject",
         targetId: String(req.params.id),
+    });
+    res.json(subject.toJSON());
+});
+exports.subjectsRouter.patch("/:id/level", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+    const level = Number(req.body?.level);
+    if (!VALID_LEVELS.includes(level))
+        throw (0, errors_1.badRequest)("Choose a level for this course — 100, 200, 300 or 400.");
+    const subject = await Subject_1.Subject.findByIdAndUpdate(req.params.id, { level }, { new: true });
+    if (!subject)
+        throw (0, errors_1.notFound)("Subject");
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "SET_SUBJECT_LEVEL",
+        targetType: "subject",
+        targetId: String(req.params.id),
+        metadata: { level },
     });
     res.json(subject.toJSON());
 });

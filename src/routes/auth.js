@@ -12,6 +12,7 @@ const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 exports.authRouter = (0, express_1.Router)();
+const VALID_LEVELS = [100, 200, 300, 400];
 // Public self-registration for STUDENTS ONLY — teachers, course reps, and
 // admins are still exclusively created by an admin (see routes/users.js).
 // Eric explicitly asked for students to be able to sign themselves up rather
@@ -28,10 +29,14 @@ exports.authRouter.post("/register-student", async (req, res) => {
     const confirmPassword = String(req.body?.confirmPassword ?? "");
     const programId = String(req.body?.programId ?? "").trim();
     const indexNumber = String(req.body?.indexNumber ?? "").trim();
+    const level = Number(req.body?.level);
     const rawSubjectIds = Array.isArray(req.body?.subjectIds) ? req.body.subjectIds : [];
     const subjectIds = [...new Set(rawSubjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (!name || !phone || !password || !programId || !indexNumber) {
         throw (0, errors_1.badRequest)("Fill in your name, phone number, password, program, and index number.");
+    }
+    if (!VALID_LEVELS.includes(level)) {
+        throw (0, errors_1.badRequest)("Choose your level — 100, 200, 300 or 400.");
     }
     if (password.length < 8) {
         throw (0, errors_1.badRequest)("Password must be at least 8 characters.");
@@ -70,6 +75,7 @@ exports.authRouter.post("/register-student", async (req, res) => {
         password_hash: await (0, password_1.hashPassword)(password),
         program_id: program._id,
         index_number: indexNumber,
+        level,
         enrolled_subject_ids: subjects.map((s) => s._id),
         must_reset_password: false, // they chose this password themselves — nothing to reset
     });

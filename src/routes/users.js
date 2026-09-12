@@ -14,6 +14,7 @@ const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 exports.usersRouter = (0, express_1.Router)();
 const VALID_ROLES = ["ADMIN", "TEACHER", "COURSE_REP", "STUDENT"];
+const VALID_LEVELS = [100, 200, 300, 400];
 // Roles an admin can create directly through POST "/" below. COURSE_REP is
 // deliberately excluded — per Eric's direction, a course rep is no longer
 // registered directly. Instead: the person registers (or is registered) as a
@@ -75,6 +76,31 @@ exports.usersRouter.patch("/me/subjects", auth_1.authenticate, (0, auth_1.requir
     });
     res.json({ user: user.toJSON() });
 });
+// Self-service: a STUDENT (or COURSE_REP) sets/changes their own level (100,
+// 200, 300 or 400) — separate from the admin-only PATCH "/:id" below, same
+// reasoning as "/me/subjects" above. Powers the "choose your level" prompt on
+// the student dashboard for an account that predates this field (or an admin
+// cleared it).
+exports.usersRouter.patch("/me/level", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
+    const level = Number(req.body?.level);
+    if (!VALID_LEVELS.includes(level)) {
+        throw (0, errors_1.badRequest)("Choose your level — 100, 200, 300 or 400.");
+    }
+    const user = await User_1.User.findById(req.session.sub);
+    if (!user)
+        throw (0, errors_1.notFound)("User");
+    user.level = level;
+    user.updated_at = new Date();
+    await user.save();
+    await (0, audit_1.writeAudit)({
+        actorId: req.session.sub,
+        action: "UPDATE_OWN_LEVEL",
+        targetType: "user",
+        targetId: String(user._id),
+        metadata: { level },
+    });
+    res.json({ user: user.toJSON() });
+});
 // Admin-only listing, e.g. GET /api/users?role=TEACHER or ?role=STUDENT&programId=...
 exports.usersRouter.get("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const role = String(req.query.role ?? "");
@@ -93,6 +119,8 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
     const phone = String(req.body?.phone ?? "").trim();
     const programId = String(req.body?.programId ?? "").trim();
     const indexNumber = String(req.body?.indexNumber ?? "").trim();
+    const rawLevel = req.body?.level;
+    const level = rawLevel !== undefined && rawLevel !== null && rawLevel !== "" ? Number(rawLevel) : null;
     const rawSubjectIds = Array.isArray(req.body?.subjectIds) ? req.body.subjectIds : [];
     const subjectIds = [...new Set(rawSubjectIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
     if (!VALID_ROLES.includes(role) || role === "ADMIN")
@@ -104,6 +132,9 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
         throw (0, errors_1.badRequest)("Name and phone number are required.");
     if (role === "STUDENT" && !programId) {
         throw (0, errors_1.badRequest)("A program is required for this role.");
+    }
+    if (level !== null && !VALID_LEVELS.includes(level)) {
+        throw (0, errors_1.badRequest)("Level must be 100, 200, 300 or 400.");
     }
     // The courses this student is offering are optional here (unlike
     // self-registration — see routes/auth.js) since an admin may not know
@@ -136,6 +167,7 @@ exports.usersRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMI
         // `undefined` (not `null`) when absent — see the comment on the schema
         // field in models/User.js for why this matters for the sparse index.
         index_number: indexNumber || undefined,
+        level,
         enrolled_subject_ids: subjects.map((s) => s._id),
     });
     await (0, audit_1.writeAudit)({
@@ -186,6 +218,13 @@ exports.usersRouter.patch("/:id", auth_1.authenticate, (0, auth_1.requireRole)("
                 throw (0, errors_1.badRequest)("That index number is already in use by someone else.", "INDEX_NUMBER_TAKEN");
             user.index_number = indexNumber;
         }
+    }
+    if (req.body?.level !== undefined) {
+        const level = req.body.level === null || req.body.level === "" ? null : Number(req.body.level);
+        if (level !== null && !VALID_LEVELS.includes(level)) {
+            throw (0, errors_1.badRequest)("Level must be 100, 200, 300 or 400.");
+        }
+        user.level = level;
     }
     let effectiveProgramId = user.program_id ? String(user.program_id) : "";
     if (req.body?.programId !== undefined) {

@@ -20,6 +20,13 @@ const userSchema = new mongoose_1.Schema({
     // sparse index actually needs to work correctly.
     index_number: { type: String, unique: true, sparse: true },
     program_id: { type: mongoose_1.Schema.Types.ObjectId, ref: "Program", default: null },
+    // The student's own year/level — 100 (year 1) through 400 (year 4).
+    // Distinct from a Subject's `level` (models/Subject.js): this is which
+    // year the STUDENT is in, not which year a course is aimed at. Required
+    // at self-registration (routes/auth.js); nullable here so accounts
+    // created before this field existed keep reading fine, same
+    // backward-compatible pattern as enrolled_subject_ids below.
+    level: { type: Number, enum: [100, 200, 300, 400], default: null },
     // Only meaningful for role COURSE_REP: the subject(s) they're responsible
     // for scheduling lectures in (see routes/lectures.js's POST "/" handler,
     // which rejects a lecture for any subject not in this list). A course rep
