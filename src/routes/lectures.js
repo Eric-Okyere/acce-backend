@@ -81,12 +81,9 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     const lectureHallId = String(req.body?.lectureHallId ?? "");
     const title = String(req.body?.title ?? "").trim();
     const startTime = String(req.body?.startTime ?? "");
-    const durationHours = Number(req.body?.durationHours);
-    if (!subjectId || !lectureHallId || !startTime || !req.body?.durationHours) {
-        throw (0, errors_1.badRequest)("Subject, hall, start time, and lesson duration are all required.");
-    }
-    if (!constants_1.VALID_LECTURE_DURATION_HOURS.includes(durationHours)) {
-        throw (0, errors_1.badRequest)(`Lesson duration must be one of: ${constants_1.VALID_LECTURE_DURATION_HOURS.join(", ")} hours.`, "INVALID_DURATION");
+    const endTime = String(req.body?.endTime ?? "");
+    if (!subjectId || !lectureHallId || !startTime || !endTime) {
+        throw (0, errors_1.badRequest)("Subject, hall, start time, and end time are all required.");
     }
     const subject = await Subject_1.Subject.findById(subjectId);
     if (!subject) {
@@ -116,7 +113,15 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     const start = new Date(startTime);
     if (Number.isNaN(start.getTime()))
         throw (0, errors_1.badRequest)("Start time is invalid.");
-    const end = new Date(start.getTime() + durationHours * 60 * 60 * 1000);
+    const end = new Date(endTime);
+    if (Number.isNaN(end.getTime()))
+        throw (0, errors_1.badRequest)("End time is invalid.");
+    if (end.getTime() <= start.getTime()) {
+        throw (0, errors_1.badRequest)("End time must be after the start time.", "INVALID_TIME_RANGE");
+    }
+    if (end.getTime() - start.getTime() > constants_1.MAX_LECTURE_HOURS * 60 * 60 * 1000) {
+        throw (0, errors_1.badRequest)(`A lecture can't run longer than ${constants_1.MAX_LECTURE_HOURS} hours — double-check the end time (and date).`, "LECTURE_TOO_LONG");
+    }
     const overlap = await Lecture_1.Lecture.findOne({
         lecture_hall_id: lectureHallId,
         status: { $ne: "CANCELLED" },

@@ -347,22 +347,27 @@ async function main() {
     });
     const unassignedRepLogin = await api("POST", "/auth/login", { phone: "0700000093", password: "Rep@12345" });
     const unassignedRepToken = unassignedRepLogin.json.token;
+    // As of v3.41 the lecturer types a raw end time rather than picking a
+    // fixed duration — every POST /lectures call below now sends its own
+    // endTime (start + 1 hour), matching what the create-lecture form sends.
     const futureStart = new Date(Date.now() + 60 * 60_000).toISOString();
-    const lectureNoSubjectAssigned = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, durationHours: 1 }, unassignedRepToken);
+    const futureEnd = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const lectureNoSubjectAssigned = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, unassignedRepToken);
     assert(lectureNoSubjectAssigned.status === 403 && lectureNoSubjectAssigned.json.code === "NO_SUBJECT_ASSIGNED", "a course rep with no assigned subjects cannot schedule any lecture");
-    const wrongSubjectLecture = await api("POST", "/lectures", { subjectId: String(otherProgramSubject._id), lectureHallId: String(hall._id), startTime: futureStart, durationHours: 1 }, promotedRepToken);
+    const wrongSubjectLecture = await api("POST", "/lectures", { subjectId: String(otherProgramSubject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, promotedRepToken);
     assert(wrongSubjectLecture.status === 403 && wrongSubjectLecture.json.code === "WRONG_SUBJECT", "a course rep cannot schedule a lecture for a subject they aren't responsible for");
-    const firstSubjectLecture = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, durationHours: 1 }, promotedRepToken);
+    const firstSubjectLecture = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, promotedRepToken);
     assert(firstSubjectLecture.status === 201 && firstSubjectLecture.json.subject_id === String(subject._id), "a course rep can schedule a lecture for the first subject they're responsible for");
     const laterStart = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
-    const secondSubjectLecture = await api("POST", "/lectures", { subjectId: String(subject2._id), lectureHallId: String(hall._id), startTime: laterStart, durationHours: 1 }, promotedRepToken);
+    const laterEnd = new Date(Date.now() + 4 * 60 * 60_000).toISOString();
+    const secondSubjectLecture = await api("POST", "/lectures", { subjectId: String(subject2._id), lectureHallId: String(hall._id), startTime: laterStart, endTime: laterEnd }, promotedRepToken);
     assert(secondSubjectLecture.status === 201 && secondSubjectLecture.json.subject_id === String(subject2._id), "the same course rep can also schedule a lecture for the second subject they're responsible for");
     console.log("\n12. Demoting a course rep back to a student");
     const demoteForbiddenForNonAdmin = await api("PATCH", `/users/${promotableStudent._id}/demote-to-student`, undefined, studentToken);
     assert(demoteForbiddenForNonAdmin.status === 403, "a non-admin cannot demote a course rep");
     const demoteSuccess = await api("PATCH", `/users/${promotableStudent._id}/demote-to-student`, undefined, adminToken);
     assert(demoteSuccess.status === 200 && demoteSuccess.json.user?.role === "STUDENT" && Array.isArray(demoteSuccess.json.user?.responsible_subject_ids) && demoteSuccess.json.user.responsible_subject_ids.length === 0, "demoting a course rep reverts their role to student and clears their assigned subjects");
-    const demotedTriesLecture = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, durationHours: 1 }, promotedRepToken);
+    const demotedTriesLecture = await api("POST", "/lectures", { subjectId: String(subject._id), lectureHallId: String(hall._id), startTime: futureStart, endTime: futureEnd }, promotedRepToken);
     assert(demotedTriesLecture.status === 403, "after demotion, scheduling a lecture with the (still-valid, now-stale) token is rejected once the account is no longer assigned any subject");
     server.close();
     console.log(`\n${passed} passed, ${failed} failed.\n`);
