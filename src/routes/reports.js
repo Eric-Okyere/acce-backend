@@ -124,6 +124,11 @@ exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requi
             studentId: String(s._id),
             name: s.name,
             indexNumber: s.index_number,
+            // The student's own level (100–400, or null if never set) — lets
+            // the frontend group this subject's attendance table by level,
+            // since one subject/teacher can teach students across several
+            // levels at once (a combined class). Distinct from Subject.level.
+            level: s.level ?? null,
             present: agg.present,
             incomplete: agg.incomplete,
             absent: agg.absent,

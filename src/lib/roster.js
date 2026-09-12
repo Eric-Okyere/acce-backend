@@ -30,6 +30,10 @@ async function getLectureRoster(lecture) {
             studentId: String(s._id),
             studentName: s.name,
             indexNumber: s.index_number,
+            // The student's own level — lets a lecture's roster be grouped by
+            // level too (a subject can have students across several levels
+            // at once). Distinct from the lecture's subject's own level.
+            level: s.level ?? null,
             status,
             checkInAt: record?.check_in_at ?? null,
             checkOutAt: record?.check_out_at ?? null,
