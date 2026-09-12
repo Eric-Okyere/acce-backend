@@ -263,11 +263,19 @@ exports.usersRouter.patch("/:id", auth_1.authenticate, (0, auth_1.requireRole)("
 });
 // Admin deletes a user outright — mainly for the Students page (a duplicate
 // or mistakenly self-registered account). Blocked for admin accounts and for
-// deleting yourself, as a safety rail. Their device binding and attendance
-// history are deleted too — orphaned records tied to a gone account's id
-// serve no purpose and would just look like a bug (a "ghost" roster entry)
-// anywhere they're referenced. Lectures and audit log entries the user
-// authored/appears in are left as historical record.
+// deleting yourself, as a safety rail. A STUDENT is additionally blocked
+// unless they've completed their program (level 400) — per Eric's direction,
+// deleting a student is meant for graduated accounts, not as a general-purpose
+// "remove anyone" tool; deactivating (PATCH /:id/active) is still available
+// for a student who needs to be taken off the roster before then. This gate
+// deliberately does NOT apply to TEACHER or COURSE_REP — "student" was asked
+// for specifically, and a course rep especially may need removing regardless
+// of level (e.g. a bad promotion) without waiting on a "completed" state that
+// isn't really about them anymore once promoted. Their device binding and
+// attendance history are deleted too — orphaned records tied to a gone
+// account's id serve no purpose and would just look like a bug (a "ghost"
+// roster entry) anywhere they're referenced. Lectures and audit log entries
+// the user authored/appears in are left as historical record.
 exports.usersRouter.delete("/:id", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const user = await User_1.User.findById(req.params.id);
     if (!user)
@@ -277,6 +285,9 @@ exports.usersRouter.delete("/:id", auth_1.authenticate, (0, auth_1.requireRole)(
     }
     if (String(user._id) === req.session.sub) {
         throw (0, errors_1.badRequest)("You can't delete your own account.");
+    }
+    if (user.role === "STUDENT" && user.level !== 400) {
+        throw (0, errors_1.badRequest)(`${user.name} hasn't completed their program yet (${user.level ? `currently level ${user.level}` : "no level on file"}) — only students at level 400 can be deleted. Deactivate them instead if they need to be taken off the roster now.`, "NOT_COMPLETED");
     }
     await Promise.all([
         Device_1.Device.deleteOne({ student_id: user._id }),
