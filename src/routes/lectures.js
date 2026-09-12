@@ -15,8 +15,12 @@ const lecturePhase_1 = require("../lib/lecturePhase");
 const constants_1 = require("../lib/constants");
 const enrollment_1 = require("../lib/enrollment");
 exports.lecturesRouter = (0, express_1.Router)();
-// Course rep's own scheduled lectures.
-exports.lecturesRouter.get("/mine", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP"), async (req, res) => {
+// The caller's own scheduled lectures — originally course-rep-only, now also
+// used by a TEACHER or ADMIN who scheduled one themselves (see POST "/"
+// below). `course_rep_id` is the historical field name (kept as-is to avoid
+// a data migration) but holds whichever user actually created the lecture,
+// regardless of role.
+exports.lecturesRouter.get("/mine", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP", "TEACHER", "ADMIN"), async (req, res) => {
     const lectures = await Lecture_1.Lecture.find({ course_rep_id: req.session.sub }).sort({ start_time: -1 });
     res.json(lectures.map((l) => l.toJSON()));
 });
@@ -60,18 +64,19 @@ exports.lecturesRouter.get("/:id/roster", auth_1.authenticate, (0, auth_1.requir
     const roster = await (0, roster_1.getLectureRoster)(lecture);
     res.json(roster);
 });
-exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP"), async (req, res) => {
-    const rep = await User_1.User.findById(req.session.sub);
-    if (!rep?.program_id)
-        throw (0, errors_1.badRequest)("Your account isn't linked to a program — contact admin.");
-    // Every course rep is responsible for one or more subjects (assigned by
-    // an admin when they were promoted — see routes/users.js's
-    // promote-course-rep route) and can only schedule lectures for one of
-    // those subjects, not any other subject in their program.
-    const responsibleSubjectIds = (rep.responsible_subject_ids ?? []).map((id) => String(id));
-    if (responsibleSubjectIds.length === 0) {
-        throw (0, errors_1.forbidden)("You haven't been assigned a subject yet — ask an admin to assign you one before scheduling lectures.", "NO_SUBJECT_ASSIGNED");
-    }
+// Who can schedule a lecture, and which subjects they're allowed to schedule
+// one for, depends on role:
+//   - COURSE_REP: only a subject they're responsible for (assigned by an
+//     admin when promoted — see routes/users.js's promote-course-rep route).
+//   - TEACHER: only a subject they teach (Subject.teacher_id).
+//   - ADMIN: any subject — no ownership restriction, same broad reach admin
+//     already has elsewhere (deleting any user, editing any student, etc.).
+// `course_rep_id` on the created Lecture stays the historical field name
+// (kept as-is rather than renamed, to avoid a data migration touching every
+// existing lecture) but simply holds whichever of the three actually
+// scheduled it.
+exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP", "TEACHER", "ADMIN"), async (req, res) => {
+    const role = req.session.role;
     const subjectId = String(req.body?.subjectId ?? "");
     const lectureHallId = String(req.body?.lectureHallId ?? "");
     const title = String(req.body?.title ?? "").trim();
@@ -80,13 +85,28 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     if (!subjectId || !lectureHallId || !startTime || !endTime) {
         throw (0, errors_1.badRequest)("Subject, hall, start time, and end time are all required.");
     }
-    if (!responsibleSubjectIds.includes(subjectId)) {
-        throw (0, errors_1.forbidden)("You can only schedule lectures for a subject you're responsible for.", "WRONG_SUBJECT");
-    }
     const subject = await Subject_1.Subject.findById(subjectId);
     if (!subject) {
         throw (0, errors_1.notFound)("Subject");
     }
+    if (role === "COURSE_REP") {
+        const rep = await User_1.User.findById(req.session.sub);
+        if (!rep?.program_id)
+            throw (0, errors_1.badRequest)("Your account isn't linked to a program — contact admin.");
+        const responsibleSubjectIds = (rep.responsible_subject_ids ?? []).map((id) => String(id));
+        if (responsibleSubjectIds.length === 0) {
+            throw (0, errors_1.forbidden)("You haven't been assigned a subject yet — ask an admin to assign you one before scheduling lectures.", "NO_SUBJECT_ASSIGNED");
+        }
+        if (!responsibleSubjectIds.includes(subjectId)) {
+            throw (0, errors_1.forbidden)("You can only schedule lectures for a subject you're responsible for.", "WRONG_SUBJECT");
+        }
+    }
+    else if (role === "TEACHER") {
+        if (String(subject.teacher_id) !== req.session.sub) {
+            throw (0, errors_1.forbidden)("You can only schedule lectures for a subject you teach.", "WRONG_SUBJECT");
+        }
+    }
+    // ADMIN: any subject, no further check.
     const hall = await LectureHall_1.LectureHall.findById(lectureHallId);
     if (!hall)
         throw (0, errors_1.notFound)("Lecture hall");
@@ -115,10 +135,17 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     await (0, audit_1.writeAudit)({ actorId: req.session.sub, action: "CREATE_LECTURE", targetType: "lecture", targetId: String(lecture._id) });
     res.status(201).json(lecture.toJSON());
 });
-exports.lecturesRouter.patch("/:id/cancel", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP"), async (req, res) => {
+// COURSE_REP and TEACHER can only cancel a lecture they themselves scheduled
+// (same ownership check as before, now shared by both roles). ADMIN can
+// cancel any lecture, mirroring the oversight reach admin already has
+// elsewhere (e.g. deleting any user's account) rather than only their own.
+exports.lecturesRouter.patch("/:id/cancel", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP", "TEACHER", "ADMIN"), async (req, res) => {
     const lecture = await Lecture_1.Lecture.findById(req.params.id);
-    if (!lecture || String(lecture.course_rep_id) !== req.session.sub)
+    if (!lecture)
         throw (0, errors_1.notFound)("Lecture");
+    if (req.session.role !== "ADMIN" && String(lecture.course_rep_id) !== req.session.sub) {
+        throw (0, errors_1.notFound)("Lecture");
+    }
     lecture.status = "CANCELLED";
     await lecture.save();
     await (0, audit_1.writeAudit)({ actorId: req.session.sub, action: "CANCEL_LECTURE", targetType: "lecture", targetId: String(req.params.id) });
