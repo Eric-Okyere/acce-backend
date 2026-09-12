@@ -25,6 +25,11 @@ async function validateScan(input) {
         throw (0, errors_1.badRequest)("This lecture no longer exists.", "NO_LECTURE");
     if (lecture.status === "CANCELLED")
         throw (0, errors_1.badRequest)("This lecture was cancelled.", "CANCELLED");
+    // Manually ended early (see PATCH /lectures/:id/end) — blocks a new
+    // check-in immediately, even if the originally scheduled end_time
+    // (untouched by ending a lecture) hasn't passed yet.
+    if (lecture.status === "COMPLETED")
+        throw (0, errors_1.badRequest)("This lecture has already ended. You can no longer check in.", "LECTURE_ENDED");
     const payload = (0, qr_1.verifyHallToken)(input.qrToken);
     if (!payload) {
         throw (0, errors_1.badRequest)("This QR code could not be verified. Ask your course rep or admin for the official hall QR code.", "BAD_QR");
@@ -143,44 +148,19 @@ exports.attendanceRouter.post("/check-in", auth_1.authenticate, (0, auth_1.requi
     });
     res.json({ success: "You're checked in and marked present for this lecture.", record: record.toJSON() });
 });
+// Checking out was removed per Eric's direction: students need to rush
+// straight to their next lecture, and lingering at the hall's QR code for a
+// second scan right as one lecture ends works against that. It was already
+// non-essential to attendance by this point anyway — check-in alone marks a
+// student PRESENT immediately (see the comment on POST "/check-in" above);
+// check-out only ever recorded an optional departure timestamp on top of
+// that. The route is gone rather than just unlinked from the UI, so a
+// direct API call can't be used to route around "students must not check
+// out" either. Historical check_out_at/check_out_lat/etc. values on old
+// AttendanceRecord documents are left as-is (genuine historical fact from
+// before this change) — only new check-outs are no longer possible.
 exports.attendanceRouter.post("/check-out", auth_1.authenticate, (0, auth_1.requireRole)("STUDENT", "COURSE_REP"), async (req, res) => {
-    const input = scanBody(req);
-    const studentId = req.session.sub;
-    const { lecture, distance } = await validateScan({ ...input, studentId });
-    const existing = await AttendanceRecord_1.AttendanceRecord.findOne({ lecture_id: lecture._id, student_id: studentId });
-    if (!existing?.check_in_at)
-        throw (0, errors_1.badRequest)("You need to check in before you can check out.", "NOT_CHECKED_IN");
-    if (existing.check_out_at)
-        throw (0, errors_1.badRequest)("You've already checked out of this lecture.", "ALREADY_CHECKED_OUT");
-    const device = await Device_1.Device.findOne({ student_id: studentId });
-    if (!device || device.device_id !== input.deviceId) {
-        throw (0, errors_1.badRequest)("This isn't your registered device. If your phone was lost, damaged, or replaced, ask an admin to reset your device.", "DEVICE_MISMATCH");
-    }
-    const now = new Date();
-    const graceEnd = new Date(lecture.end_time.getTime() + lecture.checkout_grace_minutes * 60_000);
-    if (now < lecture.end_time) {
-        throw (0, errors_1.badRequest)(`Checkout opens exactly when the lecture ends (${lecture.end_time.toLocaleTimeString()}).`, "TOO_EARLY_CHECKOUT");
-    }
-    if (now > graceEnd) {
-        throw (0, errors_1.badRequest)(`The checkout window closed ${lecture.checkout_grace_minutes} minutes after the lecture ended — you're still marked present, this just would have recorded your departure time.`, "CHECKOUT_WINDOW_CLOSED");
-    }
-    existing.check_out_at = now;
-    existing.check_out_lat = input.lat;
-    existing.check_out_lng = input.lng;
-    existing.check_out_distance_m = distance;
-    existing.check_out_accuracy_m = input.accuracy;
-    existing.status = "PRESENT";
-    existing.updated_at = now;
-    await existing.save();
-    await (0, audit_1.writeAudit)({
-        actorId: studentId,
-        action: "CHECK_OUT",
-        targetType: "lecture",
-        targetId: String(lecture._id),
-        metadata: { distance, lat: input.lat, lng: input.lng },
-        ipAddress: req.ip ?? null,
-    });
-    res.json({ success: "Checked out — your departure time has been recorded. You were already marked present at check-in.", record: existing.toJSON() });
+    throw (0, errors_1.badRequest)("Checking out isn't available — you're already marked present as soon as you check in, so head straight to your next lecture.", "CHECKOUT_DISABLED");
 });
 // Called right after the camera decodes a hall's QR: verifies the signature and
 // returns which of the student's own lectures are happening at that hall right now.

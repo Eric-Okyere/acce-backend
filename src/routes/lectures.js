@@ -151,6 +151,43 @@ exports.lecturesRouter.patch("/:id/cancel", auth_1.authenticate, (0, auth_1.requ
     await (0, audit_1.writeAudit)({ actorId: req.session.sub, action: "CANCEL_LECTURE", targetType: "lecture", targetId: String(req.params.id) });
     res.json(lecture.toJSON());
 });
+// Ending a lecture early — distinct from cancelling. Available to COURSE_REP,
+// TEACHER, and ADMIN so whoever is actually running the session can close it
+// out the moment it wraps, rather than waiting for the scheduled end_time.
+// Ownership rule deliberately differs per role:
+//  - COURSE_REP: only a lecture they themselves scheduled (course_rep_id),
+//    same as cancel.
+//  - TEACHER: any lecture for a subject they teach (Subject.teacher_id),
+//    not just ones they personally scheduled — a teacher should be able to
+//    end a lecture a course rep scheduled for their own course.
+//  - ADMIN: no restriction, mirroring admin's reach elsewhere.
+exports.lecturesRouter.patch("/:id/end", auth_1.authenticate, (0, auth_1.requireRole)("COURSE_REP", "TEACHER", "ADMIN"), async (req, res) => {
+    const lecture = await Lecture_1.Lecture.findById(req.params.id);
+    if (!lecture)
+        throw (0, errors_1.notFound)("Lecture");
+    if (req.session.role === "COURSE_REP" && String(lecture.course_rep_id) !== req.session.sub) {
+        throw (0, errors_1.notFound)("Lecture");
+    }
+    if (req.session.role === "TEACHER") {
+        const subject = await Subject_1.Subject.findById(lecture.subject_id);
+        if (!subject || String(subject.teacher_id) !== req.session.sub) {
+            throw (0, errors_1.forbidden)("You can only end lectures for subjects you teach.");
+        }
+    }
+    if (lecture.status === "CANCELLED")
+        throw (0, errors_1.badRequest)("This lecture was cancelled — it can't be ended.", "LECTURE_CANCELLED");
+    if (lecture.status === "COMPLETED")
+        throw (0, errors_1.badRequest)("This lecture has already ended.", "LECTURE_ENDED");
+    const phase = (0, lecturePhase_1.lecturePhase)(lecture);
+    if (phase === "UPCOMING")
+        throw (0, errors_1.badRequest)("This lecture hasn't started yet.", "NOT_STARTED");
+    if (phase === "ENDED")
+        throw (0, errors_1.badRequest)("This lecture has already ended.", "LECTURE_ENDED");
+    lecture.status = "COMPLETED";
+    await lecture.save();
+    await (0, audit_1.writeAudit)({ actorId: req.session.sub, action: "END_LECTURE", targetType: "lecture", targetId: String(req.params.id) });
+    res.json(lecture.toJSON());
+});
 // Referenced by the student scan flow — kept here since it's still "which lectures at this hall".
 // Scoped to the courses this specific student/course-rep is offering (see
 // lib/enrollment.js), not every subject in their program.
