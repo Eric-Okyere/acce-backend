@@ -6,8 +6,25 @@ const Subject_1 = require("../models/Subject");
 const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
+const text_1 = require("../lib/text");
 exports.subjectsRouter = (0, express_1.Router)();
 const VALID_LEVELS = [100, 200, 300, 400];
+// Case-insensitive, whitespace-normalized duplicate check for a course name
+// within one program — "Mathematics", "mathematics", and " Mathematics  "
+// all collide. Programs are deliberately excluded from the comparison: the
+// same course name legitimately exists in more than one program (e.g.
+// "English Language" in both Primary and JHS Education), so uniqueness is
+// scoped per-program, matching the DB's existing compound unique index
+// (program_id + name).
+async function findDuplicateSubject(programId, name, excludeId) {
+    const filter = {
+        program_id: programId,
+        name: { $regex: new RegExp(`^${(0, text_1.escapeRegExp)(name)}$`, "i") },
+    };
+    if (excludeId)
+        filter._id = { $ne: excludeId };
+    return Subject_1.Subject.findOne(filter);
+}
 // Unauthenticated — same reasoning as programs/public (see routes/programs.js):
 // the student self-registration page needs to show each program's course list
 // (so a new student can pick which they're offering) before they have any
@@ -31,7 +48,7 @@ exports.subjectsRouter.get("/", auth_1.authenticate, async (req, res) => {
 });
 exports.subjectsRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const programId = String(req.body?.programId ?? "");
-    const name = String(req.body?.name ?? "").trim();
+    const name = (0, text_1.normalizeWhitespace)(req.body?.name);
     const code = String(req.body?.code ?? "").trim();
     const teacherId = String(req.body?.teacherId ?? "").trim();
     const level = Number(req.body?.level);
@@ -39,13 +56,34 @@ exports.subjectsRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("A
         throw (0, errors_1.badRequest)("Program and subject name are required.");
     if (!VALID_LEVELS.includes(level))
         throw (0, errors_1.badRequest)("Choose a level for this course — 100, 200, 300 or 400.");
-    const subject = await Subject_1.Subject.create({
-        program_id: programId,
-        name,
-        code: code || null,
-        level,
-        teacher_id: teacherId || null,
-    });
+    // Catch case/whitespace-variant duplicates ("Mathematics" vs "mathematics ")
+    // before hitting the DB — the compound unique index (program_id + name)
+    // only catches an exact byte-for-byte repeat, not these.
+    const duplicate = await findDuplicateSubject(programId, name);
+    if (duplicate) {
+        throw (0, errors_1.badRequest)(`"${duplicate.name}" already exists in this program — choose a different name, or edit the existing course instead.`, "DUPLICATE_SUBJECT");
+    }
+    let subject;
+    try {
+        subject = await Subject_1.Subject.create({
+            program_id: programId,
+            name,
+            code: code || null,
+            level,
+            teacher_id: teacherId || null,
+        });
+    }
+    catch (e) {
+        // Narrow race: two admins submit the identical name for the same
+        // program at almost the same moment, both pass the check above, and
+        // the DB's own unique index (program_id + name) rejects the second
+        // insert. Same friendly message as the pre-check, not the generic
+        // "That value is already in use." from the global error handler.
+        if (e && typeof e === "object" && "code" in e && e.code === 11000) {
+            throw (0, errors_1.badRequest)(`"${name}" already exists in this program — choose a different name, or edit the existing course instead.`, "DUPLICATE_SUBJECT");
+        }
+        throw e;
+    }
     await (0, audit_1.writeAudit)({
         actorId: req.session.sub,
         action: "CREATE_SUBJECT",
