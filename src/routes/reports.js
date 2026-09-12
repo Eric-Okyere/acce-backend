@@ -82,11 +82,23 @@ exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requi
     const perStudent = new Map();
     for (const s of roster)
         perStudent.set(String(s._id), { present: 0, incomplete: 0, absent: 0 });
+    // A subject/teacher can have students across several levels at once (a
+    // combined class) — the frontend's level filter needs each lecture's
+    // present/incomplete/absent broken out per level too, not just the
+    // whole-roster total, so it can redraw both charts scoped to whichever
+    // level is selected without a second round trip. levelKey() gives every
+    // level a stable, JSON-object-safe string key ("100".."400", "null" for
+    // never-set) — computed once per student and reused for both the
+    // per-lecture and per-student aggregation below.
+    function levelKey(level) {
+        return level == null ? "null" : String(level);
+    }
     const lectureStats = lectures.map((lec) => {
         const byStudent = recordsByLecture.get(String(lec._id)) ?? new Map();
         let present = 0;
         let incomplete = 0;
         let absent = 0;
+        const byLevel = {};
         for (const s of roster) {
             const status = byStudent.get(String(s._id)) ?? "ABSENT";
             if (status === "PRESENT")
@@ -102,6 +114,20 @@ exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requi
                 agg.incomplete++;
             else
                 agg.absent++;
+            const key = levelKey(s.level ?? null);
+            if (!byLevel[key])
+                byLevel[key] = { present: 0, incomplete: 0, absent: 0, total: 0 };
+            byLevel[key].total++;
+            if (status === "PRESENT")
+                byLevel[key].present++;
+            else if (status === "INCOMPLETE")
+                byLevel[key].incomplete++;
+            else
+                byLevel[key].absent++;
+        }
+        for (const key of Object.keys(byLevel)) {
+            const g = byLevel[key];
+            g.rate = g.total > 0 ? Math.round((g.present / g.total) * 1000) / 10 : 0;
         }
         const total = roster.length;
         return {
@@ -115,6 +141,7 @@ exports.reportsRouter.get("/subjects/:id", auth_1.authenticate, (0, auth_1.requi
             absent,
             total,
             rate: total > 0 ? Math.round((present / total) * 1000) / 10 : 0,
+            byLevel,
         };
     });
     const studentStats = roster.map((s) => {
