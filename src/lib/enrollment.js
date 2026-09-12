@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.subjectIdsForStudent = subjectIdsForStudent;
 exports.studentOffersSubject = studentOffersSubject;
 exports.getSubjectRoster = getSubjectRoster;
+exports.teacherOffersStudent = teacherOffersStudent;
 const User_1 = require("../models/User");
 const Subject_1 = require("../models/Subject");
 
@@ -84,4 +85,17 @@ async function getSubjectRoster(subject) {
     }
     roster.sort((a, b) => a.name.localeCompare(b.name));
     return roster;
+}
+
+/**
+ * Whether this teacher may act on this student's device binding — a
+ * teacher gets access to only students offering (or, for a course rep,
+ * responsible for) a subject this teacher teaches, never every student in
+ * the school (see routes/devices.js's teacher-scoped GET/reset). "Offering"
+ * uses the same rule as everywhere else (studentOffersSubject above),
+ * including its pre-feature-account fallback.
+ */
+async function teacherOffersStudent(teacherId, student) {
+    const subjects = await Subject_1.Subject.find({ teacher_id: teacherId });
+    return subjects.some((s) => studentOffersSubject(student, s));
 }

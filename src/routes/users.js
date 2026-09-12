@@ -12,6 +12,7 @@ const password_1 = require("../lib/password");
 const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
+const enrollment_1 = require("../lib/enrollment");
 exports.usersRouter = (0, express_1.Router)();
 const VALID_ROLES = ["ADMIN", "TEACHER", "COURSE_REP", "STUDENT"];
 const VALID_LEVELS = [100, 200, 300, 400];
@@ -324,10 +325,23 @@ exports.usersRouter.patch("/:id/active", auth_1.authenticate, (0, auth_1.require
 // always ISSUES A NEW ONE rather than revealing an old one. Returned once in
 // the response body, same as at registration time. Also flips
 // must_reset_password back on, since the admin (not the user) just chose it.
-exports.usersRouter.patch("/:id/reset-password", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
+// Also usable by a TEACHER, scoped the same way as their device-reset
+// access (routes/devices.js) — only for a STUDENT/COURSE_REP offering (or
+// responsible for) a subject this teacher teaches, never for another
+// teacher's or an admin's account. This is the "forgot my password" escape
+// hatch a teacher can now hand a student directly (see the WhatsApp/SMS
+// share on the frontend's ResetPasswordButton) without routing every case
+// through an admin.
+exports.usersRouter.patch("/:id/reset-password", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN", "TEACHER"), async (req, res) => {
     const user = await User_1.User.findById(req.params.id);
     if (!user)
         throw (0, errors_1.notFound)("User");
+    if (req.session.role === "TEACHER") {
+        const isStudentLike = user.role === "STUDENT" || user.role === "COURSE_REP";
+        if (!isStudentLike || !(await (0, enrollment_1.teacherOffersStudent)(req.session.sub, user))) {
+            throw (0, errors_1.forbidden)("You can only reset the password of a student offering a course you teach.");
+        }
+    }
     const tempPassword = (0, password_1.generateTempPassword)();
     user.password_hash = await (0, password_1.hashPassword)(tempPassword);
     user.must_reset_password = true;

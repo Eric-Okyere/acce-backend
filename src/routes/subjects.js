@@ -7,6 +7,7 @@ const auth_1 = require("../middleware/auth");
 const errors_1 = require("../lib/errors");
 const audit_1 = require("../lib/audit");
 const text_1 = require("../lib/text");
+const enrollment_1 = require("../lib/enrollment");
 exports.subjectsRouter = (0, express_1.Router)();
 const VALID_LEVELS = [100, 200, 300, 400];
 // Case-insensitive, whitespace-normalized duplicate check for a course name
@@ -144,6 +145,22 @@ exports.subjectsRouter.patch("/:id/level", auth_1.authenticate, (0, auth_1.requi
         metadata: { level },
     });
     res.json(subject.toJSON());
+});
+// Every student/course-rep "offering" this subject (see lib/enrollment.js) —
+// the same set that already backs the subject's attendance dashboard, now
+// also reusable for a teacher's device-reset page (routes/devices.js's
+// teacher-scoped routes are the actual enforcement for the reset action
+// itself; this route only needs to answer "who am I allowed to see").
+// TEACHER is restricted to a subject they teach; ADMIN can list any.
+exports.subjectsRouter.get("/:id/students", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN", "TEACHER"), async (req, res) => {
+    const subject = await Subject_1.Subject.findById(req.params.id);
+    if (!subject)
+        throw (0, errors_1.notFound)("Subject");
+    if (req.session.role === "TEACHER" && String(subject.teacher_id) !== req.session.sub) {
+        throw (0, errors_1.forbidden)("You can only view the roster for a subject you teach.");
+    }
+    const roster = await (0, enrollment_1.getSubjectRoster)(subject);
+    res.json(roster.map((u) => u.toJSON()));
 });
 exports.subjectsRouter.patch("/:id/active", auth_1.authenticate, (0, auth_1.requireRole)("ADMIN"), async (req, res) => {
     const isActive = Boolean(req.body?.isActive);

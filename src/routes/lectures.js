@@ -81,9 +81,12 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     const lectureHallId = String(req.body?.lectureHallId ?? "");
     const title = String(req.body?.title ?? "").trim();
     const startTime = String(req.body?.startTime ?? "");
-    const endTime = String(req.body?.endTime ?? "");
-    if (!subjectId || !lectureHallId || !startTime || !endTime) {
-        throw (0, errors_1.badRequest)("Subject, hall, start time, and end time are all required.");
+    const durationHours = Number(req.body?.durationHours);
+    if (!subjectId || !lectureHallId || !startTime || !req.body?.durationHours) {
+        throw (0, errors_1.badRequest)("Subject, hall, start time, and lesson duration are all required.");
+    }
+    if (!constants_1.VALID_LECTURE_DURATION_HOURS.includes(durationHours)) {
+        throw (0, errors_1.badRequest)(`Lesson duration must be one of: ${constants_1.VALID_LECTURE_DURATION_HOURS.join(", ")} hours.`, "INVALID_DURATION");
     }
     const subject = await Subject_1.Subject.findById(subjectId);
     if (!subject) {
@@ -111,9 +114,9 @@ exports.lecturesRouter.post("/", auth_1.authenticate, (0, auth_1.requireRole)("C
     if (!hall)
         throw (0, errors_1.notFound)("Lecture hall");
     const start = new Date(startTime);
-    const end = new Date(endTime);
-    if (end <= start)
-        throw (0, errors_1.badRequest)("End time must be after start time.");
+    if (Number.isNaN(start.getTime()))
+        throw (0, errors_1.badRequest)("Start time is invalid.");
+    const end = new Date(start.getTime() + durationHours * 60 * 60 * 1000);
     const overlap = await Lecture_1.Lecture.findOne({
         lecture_hall_id: lectureHallId,
         status: { $ne: "CANCELLED" },
